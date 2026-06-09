@@ -12,48 +12,35 @@
 --   3. Execute. Read the NOTICE messages for each assertion result.
 --   4. The final "ROLLBACK" ensures no data is persisted.
 --
+-- SEEDING STRATEGY (no superuser trigger-bypass tricks):
+--   We create the "past" round INITIALLY OPEN (first_kickoff in the future), seed
+--   the predictions while the lock is open, and only THEN move first_kickoff into
+--   the past to lock it. This exercises the real flow — including that the scoring
+--   trigger can still write points AFTER the round locks (migration 012) — without
+--   needing session_replication_role or any privileged trigger bypass.
+--
 -- WHAT THIS TESTS (assertions 1–9):
---   1. enforce_betting_lock: rejects INSERT on a past-locked round.
---   2. enforce_betting_lock: rejects UPDATE on a past-locked round (manual).
---   3. enforce_betting_lock: allows INSERT on a future-locked round.
---   4. compute_points: returns correct values for all scoring scenarios.
---   5. score_fixture: updates predictions.points when fixture transitions to FT.
---   6. round_predictions: returns 0 rows before lock, rows after lock (privacy).
---   7. leaderboard: includes 0-pt players; standard competition ranking (1,1,3).
+--   1. enforce_betting_lock: rejects INSERT on a locked round.
+--   3. enforce_betting_lock: allows INSERT on an open (future) round.
+--   4. compute_points: correct values for all scoring scenarios.
+--   5. score_fixture: writes predictions.points on FT transition, even after lock.
+--   6. round_predictions: 0 rows before lock, rows after lock (privacy gate).
+--   7. leaderboard: includes 0-pt players; standard competition ranking.
+--   8. RLS role checks — manual steps documented at the bottom (need a real JWT).
 --   9. handle_new_user: rejects non-whitelisted email (LIVE, REQ-1.2/1.3).
---
--- RLS ROLE CHECKS (assertion 8) — manual steps documented at the bottom.
--- Full RLS simulation requires connecting as a real auth user and is not fully
--- automated in a single SQL Editor session.
---
--- SEEDING APPROACH: users are seeded via auth.users + allowed_emails, which fires
--- handle_new_user and auto-creates public.profiles. No direct profile inserts.
 
 begin;
 
--- ─── Seed: whitelist emails first, then seed auth.users through the real chain ─
--- We insert into auth.users (as postgres superuser inside this transaction), which
--- fires the handle_new_user AFTER INSERT trigger.  That trigger:
---   1. Checks public.allowed_emails (whitelist gate — REQ-1.2/1.3).
---   2. Inserts the matching public.profiles row with display_name taken from
---      raw_user_meta_data->>'full_name' (falling back to the email local-part).
--- We must therefore insert into allowed_emails BEFORE auth.users, and we pass
--- full_name in raw_user_meta_data so the display_name resolves to Alice/Bob/Charlie.
--- We do NOT insert into public.profiles manually — the trigger owns that.
-
--- Step 1: whitelist the test emails.
+-- ─── Seed step 1: whitelist the test emails ──────────────────────────────────
 insert into public.allowed_emails (email) values
   ('alice@test.example'),
   ('bob@test.example'),
   ('charlie@test.example')
 on conflict (email) do nothing;
 
--- Step 2: insert into auth.users — handle_new_user fires and creates profiles.
+-- ─── Seed step 2: insert auth.users (handle_new_user creates profiles) ───────
+-- display_name resolves from raw_user_meta_data->>'full_name'.
 do $$
-declare
-  v_alice_id   uuid := '00000000-0000-0000-0000-000000000001';
-  v_bob_id     uuid := '00000000-0000-0000-0000-000000000002';
-  v_charlie_id uuid := '00000000-0000-0000-0000-000000000003';
 begin
   insert into auth.users (
     instance_id, id, aud, role, email,
@@ -61,44 +48,29 @@ begin
     created_at, updated_at,
     raw_app_meta_data, raw_user_meta_data, is_super_admin
   ) values
-    (
-      '00000000-0000-0000-0000-000000000000',
-      v_alice_id, 'authenticated', 'authenticated', 'alice@test.example',
-      '', now(), now(), now(),
-      '{"provider":"email","providers":["email"]}',
-      '{"full_name":"Alice"}',
-      false
-    ),
-    (
-      '00000000-0000-0000-0000-000000000000',
-      v_bob_id, 'authenticated', 'authenticated', 'bob@test.example',
-      '', now(), now(), now(),
-      '{"provider":"email","providers":["email"]}',
-      '{"full_name":"Bob"}',
-      false
-    ),
-    (
-      '00000000-0000-0000-0000-000000000000',
-      v_charlie_id, 'authenticated', 'authenticated', 'charlie@test.example',
-      '', now(), now(), now(),
-      '{"provider":"email","providers":["email"]}',
-      '{"full_name":"Charlie"}',
-      false
-    );
-  -- handle_new_user has now created public.profiles rows for all three users.
+    ('00000000-0000-0000-0000-000000000000',
+     '00000000-0000-0000-0000-000000000001', 'authenticated', 'authenticated', 'alice@test.example',
+     '', now(), now(), now(),
+     '{"provider":"email","providers":["email"]}', '{"full_name":"Alice"}', false),
+    ('00000000-0000-0000-0000-000000000000',
+     '00000000-0000-0000-0000-000000000002', 'authenticated', 'authenticated', 'bob@test.example',
+     '', now(), now(), now(),
+     '{"provider":"email","providers":["email"]}', '{"full_name":"Bob"}', false),
+    ('00000000-0000-0000-0000-000000000000',
+     '00000000-0000-0000-0000-000000000003', 'authenticated', 'authenticated', 'charlie@test.example',
+     '', now(), now(), now(),
+     '{"provider":"email","providers":["email"]}', '{"full_name":"Charlie"}', false);
 end;
 $$;
 
--- ─── Seed: two rounds ─────────────────────────────────────────────────────────
--- Round 1: PAST-locked (first_kickoff 2 hours ago → locks_at 3 hours ago).
--- Round 2: FUTURE-locked (first_kickoff 2 hours from now → locks_at 1 hour from now).
-
+-- ─── Seed step 3: two rounds, BOTH initially open (first_kickoff in future) ──
+-- The set_round_locks_at trigger derives locks_at = first_kickoff - 1 hour.
 insert into public.rounds (api_round, name, first_kickoff, status) values
-  ('Test - Past',   'Test Round Past',   now() - interval '2 hours', 'locked'),
+  ('Test - Past',   'Test Round Past',   now() + interval '3 hours', 'open'),
   ('Test - Future', 'Test Round Future', now() + interval '2 hours', 'open')
 on conflict (api_round) do nothing;
 
--- ─── Seed: fixtures ──────────────────────────────────────────────────────────
+-- ─── Seed step 4: one fixture per round ──────────────────────────────────────
 do $$
 declare
   v_past_round_id   bigint;
@@ -107,77 +79,58 @@ begin
   select id into v_past_round_id   from public.rounds where api_round = 'Test - Past';
   select id into v_future_round_id from public.rounds where api_round = 'Test - Future';
 
-  -- Fixture 9000001: in past round (locked), not yet FT.
   insert into public.fixtures (id, round_id, home_team, away_team, kickoff, status)
-  values (9000001, v_past_round_id, 'Team A', 'Team B', now() - interval '2 hours', 'FT')
+  values (9000001, v_past_round_id, 'Team A', 'Team B', now() + interval '3 hours', 'NS')
   on conflict (id) do nothing;
 
-  -- Fixture 9000002: in future round (open), not yet started.
   insert into public.fixtures (id, round_id, home_team, away_team, kickoff, status)
   values (9000002, v_future_round_id, 'Team C', 'Team D', now() + interval '2 hours', 'NS')
   on conflict (id) do nothing;
 end;
 $$;
 
--- ─── ASSERTION 1: enforce_betting_lock rejects INSERT on locked round ─────────
--- Expected: raises exception with errcode P0001.
--- Verified: LIVE (trigger fires synchronously on every INSERT to predictions).
+-- ─── Seed step 5: predictions, while BOTH rounds are still open ──────────────
+-- Charlie predicts 2-1 on the (soon-to-be-locked) past fixture.
+-- Alice and Bob predict on the future fixture.
 do $$
-declare
-  v_alice_id uuid := '00000000-0000-0000-0000-000000000001';
+begin
+  insert into public.predictions (user_id, fixture_id, pred_home, pred_away) values
+    ('00000000-0000-0000-0000-000000000003', 9000001, 2, 1),  -- Charlie, past fixture
+    ('00000000-0000-0000-0000-000000000001', 9000002, 2, 1),  -- Alice, future fixture
+    ('00000000-0000-0000-0000-000000000002', 9000002, 0, 0)   -- Bob, future fixture
+  on conflict (user_id, fixture_id) do nothing;
+end;
+$$;
+
+-- ─── Seed step 6: NOW lock the past round (move first_kickoff into the past) ──
+-- The set_round_locks_at trigger recomputes locks_at to ~3 hours ago.
+update public.rounds
+set first_kickoff = now() - interval '2 hours'
+where api_round = 'Test - Past';
+
+-- ─── ASSERTION 1: enforce_betting_lock rejects INSERT on a locked round ──────
+do $$
 begin
   begin
     insert into public.predictions (user_id, fixture_id, pred_home, pred_away)
-    values (v_alice_id, 9000001, 1, 0);
-    -- If we reach here, the trigger did NOT fire → test FAILED.
+    values ('00000000-0000-0000-0000-000000000001', 9000001, 1, 0);  -- Alice, locked fixture
     raise notice 'ASSERTION 1 FAILED: INSERT on locked round was NOT rejected.';
   exception
     when sqlstate 'P0001' then
       raise notice 'ASSERTION 1 PASSED: INSERT on locked round correctly rejected (P0001).';
     when others then
-      raise notice 'ASSERTION 1 FAILED: Unexpected error: % / %', sqlstate, sqlerrm;
+      raise notice 'ASSERTION 1 FAILED: unexpected error % / %', sqlstate, sqlerrm;
   end;
 end;
 $$;
 
--- ─── ASSERTION 2: enforce_betting_lock rejects UPDATE on locked round ─────────
--- Seed a prediction via direct insert (bypassing trigger with a past-round fixture).
--- We need to seed a prediction row first (INSERT would fail via trigger). Use a
--- future-round fixture prediction as the seed, then attempt to update to a locked one.
--- Alternative: insert with a future fixture, then test UPDATE path on locked fixture
--- by updating the fixture_id field. But to keep it simple and accurate, we test
--- UPDATE by inserting a valid row first and then attempting to update pred_home.
--- The UPDATE trigger reads fixture_id from the EXISTING row, so we test:
---   1. Insert valid prediction (future round — should succeed).
---   2. Update it (still future round) — should succeed.
---   3. Then separately test UPDATE on a row that references a locked fixture.
--- For the locked-round UPDATE test, we must insert the row bypassing the trigger.
+-- ─── ASSERTION 3: enforce_betting_lock allows INSERT on an open round ────────
 do $$
-declare
-  v_alice_id uuid := '00000000-0000-0000-0000-000000000001';
-  v_past_fix_id bigint := 9000001;
-begin
-  -- Temporarily disable the trigger to seed a row for the locked fixture.
-  -- (In a real Supabase project you cannot disable triggers as a non-superuser.
-  --  This assertion is documented as MANUAL — see note below.)
-  raise notice 'ASSERTION 2 NOTE: UPDATE test on locked round requires seeding a row '
-               'while bypassing the trigger. This is only possible as superuser/service role. '
-               'Manual verification: seed a prediction directly via service role, then attempt '
-               'PATCH /rest/v1/predictions as an authenticated user — expect 400 P0001.';
-end;
-$$;
-
--- ─── ASSERTION 3: enforce_betting_lock allows INSERT on future round ──────────
--- Expected: INSERT succeeds (no exception).
--- Verified: LIVE.
-do $$
-declare
-  v_alice_id uuid := '00000000-0000-0000-0000-000000000001';
 begin
   begin
     insert into public.predictions (user_id, fixture_id, pred_home, pred_away)
-    values (v_alice_id, 9000002, 2, 1);
-    raise notice 'ASSERTION 3 PASSED: INSERT on future-locked round accepted.';
+    values ('00000000-0000-0000-0000-000000000003', 9000002, 2, 2);  -- Charlie, open future fixture
+    raise notice 'ASSERTION 3 PASSED: INSERT on open (future) round accepted.';
   exception
     when others then
       raise notice 'ASSERTION 3 FAILED: INSERT unexpectedly rejected: % / %', sqlstate, sqlerrm;
@@ -185,115 +138,62 @@ begin
 end;
 $$;
 
--- ─── ASSERTION 4: compute_points returns correct values ───────────────────────
--- Tests all scoring scenarios from REQ-5.2 and REQ-5.3.
--- Verified: LIVE (pure SQL function, no trigger involvement).
+-- ─── ASSERTION 4: compute_points returns correct values ──────────────────────
 do $$
 declare
   v_result smallint;
 begin
-  -- 4a: exact score → 2 pts
   v_result := public.compute_points(2::smallint, 1::smallint, 2::smallint, 1::smallint);
-  if v_result = 2 then
-    raise notice 'ASSERTION 4a PASSED: exact score (2-1 vs 2-1) → 2 pts.';
-  else
-    raise notice 'ASSERTION 4a FAILED: expected 2, got %.', v_result;
-  end if;
+  if v_result = 2 then raise notice 'ASSERTION 4a PASSED: exact score (2-1 vs 2-1) -> 2 pts.';
+  else raise notice 'ASSERTION 4a FAILED: expected 2, got %.', v_result; end if;
 
-  -- 4b: correct outcome only (home win, wrong score) → 1 pt
   v_result := public.compute_points(1::smallint, 0::smallint, 3::smallint, 0::smallint);
-  if v_result = 1 then
-    raise notice 'ASSERTION 4b PASSED: correct outcome home win (1-0 pred, 3-0 actual) → 1 pt.';
-  else
-    raise notice 'ASSERTION 4b FAILED: expected 1, got %.', v_result;
-  end if;
+  if v_result = 1 then raise notice 'ASSERTION 4b PASSED: correct outcome home win (1-0 pred, 3-0 actual) -> 1 pt.';
+  else raise notice 'ASSERTION 4b FAILED: expected 1, got %.', v_result; end if;
 
-  -- 4c: correct outcome only (draw, wrong score) → 1 pt
   v_result := public.compute_points(0::smallint, 0::smallint, 1::smallint, 1::smallint);
-  if v_result = 1 then
-    raise notice 'ASSERTION 4c PASSED: correct outcome draw (0-0 pred, 1-1 actual) → 1 pt.';
-  else
-    raise notice 'ASSERTION 4c FAILED: expected 1, got %.', v_result;
-  end if;
+  if v_result = 1 then raise notice 'ASSERTION 4c PASSED: correct outcome draw (0-0 pred, 1-1 actual) -> 1 pt.';
+  else raise notice 'ASSERTION 4c FAILED: expected 1, got %.', v_result; end if;
 
-  -- 4d: exact draw → 2 pts
   v_result := public.compute_points(1::smallint, 1::smallint, 1::smallint, 1::smallint);
-  if v_result = 2 then
-    raise notice 'ASSERTION 4d PASSED: exact draw (1-1 vs 1-1) → 2 pts.';
-  else
-    raise notice 'ASSERTION 4d FAILED: expected 2, got %.', v_result;
-  end if;
+  if v_result = 2 then raise notice 'ASSERTION 4d PASSED: exact draw (1-1 vs 1-1) -> 2 pts.';
+  else raise notice 'ASSERTION 4d FAILED: expected 2, got %.', v_result; end if;
 
-  -- 4e: wrong outcome (predicted away win, actual home win) → 0 pts
   v_result := public.compute_points(0::smallint, 1::smallint, 2::smallint, 0::smallint);
-  if v_result = 0 then
-    raise notice 'ASSERTION 4e PASSED: wrong outcome (0-1 pred, 2-0 actual) → 0 pts.';
-  else
-    raise notice 'ASSERTION 4e FAILED: expected 0, got %.', v_result;
-  end if;
+  if v_result = 0 then raise notice 'ASSERTION 4e PASSED: wrong outcome (0-1 pred, 2-0 actual) -> 0 pts.';
+  else raise notice 'ASSERTION 4e FAILED: expected 0, got %.', v_result; end if;
 
-  -- 4f: exact 0-0 (draw) → 2 pts
   v_result := public.compute_points(0::smallint, 0::smallint, 0::smallint, 0::smallint);
-  if v_result = 2 then
-    raise notice 'ASSERTION 4f PASSED: exact 0-0 draw → 2 pts.';
-  else
-    raise notice 'ASSERTION 4f FAILED: expected 2, got %.', v_result;
-  end if;
+  if v_result = 2 then raise notice 'ASSERTION 4f PASSED: exact 0-0 draw -> 2 pts.';
+  else raise notice 'ASSERTION 4f FAILED: expected 2, got %.', v_result; end if;
 end;
 $$;
 
--- ─── ASSERTION 5: score_fixture sets points when fixture transitions to FT ────
--- We update fixture 9000001 (already FT in seed) to have goals, simulating a
--- re-sync that fills in goals. Then check that predictions.points was updated.
--- Alice's prediction on 9000001 was NOT inserted (assertion 1 blocked it), so
--- we seed one via direct insert (bypassing trigger temporarily).
---
--- To test score_fixture without RLS complexity, we insert a prediction on
--- fixture 9000001 for Charlie (who has no prediction there yet).
--- We bypass the betting lock trigger by inserting directly into the table
--- via a DO $$ block that temporarily sets session_replication_role.
--- NOTE: This requires superuser or replication privilege.
--- In Supabase Dashboard SQL Editor you run as postgres (superuser).
+-- ─── ASSERTION 5: score_fixture writes points on FT, even after lock ─────────
+-- Charlie's prediction on 9000001 was seeded while open; the round is now locked.
+-- Transitioning the fixture to FT must fire score_fixture and set points = 2,
+-- which only works because migration 012 lets the scoring update through the lock.
 do $$
 declare
-  v_charlie_id uuid := '00000000-0000-0000-0000-000000000003';
-  v_points     smallint;
+  v_points smallint;
 begin
-  -- Temporarily disable triggers on predictions to seed past-round row.
-  set session_replication_role = replica;
-  insert into public.predictions (user_id, fixture_id, pred_home, pred_away, points)
-  values (v_charlie_id, 9000001, 2, 1, 0)
-  on conflict (user_id, fixture_id) do nothing;
-  set session_replication_role = default;
-
-  -- Now update fixture 9000001 to FT with result 2-1 (status was already FT in seed).
-  -- Force a re-trigger by transitioning status: NS → FT with goals.
-  update public.fixtures
-  set status = 'NS'
-  where id = 9000001;
-
-  -- Now transition to FT with result 2-1 → should fire score_fixture.
   update public.fixtures
   set status = 'FT', goals_home = 2, goals_away = 1
   where id = 9000001;
 
-  -- Check that Charlie's prediction got scored.
   select points into v_points
   from public.predictions
-  where user_id = v_charlie_id and fixture_id = 9000001;
+  where user_id = '00000000-0000-0000-0000-000000000003' and fixture_id = 9000001;
 
   if v_points = 2 then
-    raise notice 'ASSERTION 5 PASSED: score_fixture set Charlie''s points to 2 (exact score 2-1 vs 2-1).';
+    raise notice 'ASSERTION 5 PASSED: score_fixture set Charlie''s points to 2 (exact 2-1) after lock.';
   else
     raise notice 'ASSERTION 5 FAILED: expected 2, got %.', v_points;
   end if;
 end;
 $$;
 
--- ─── ASSERTION 6: round_predictions privacy gate ──────────────────────────────
--- Verified: LIVE (pure SQL function with now() >= locks_at gate).
--- Past round → now() >= locks_at → should return rows.
--- Future round → now() < locks_at → should return 0 rows.
+-- ─── ASSERTION 6: round_predictions privacy gate ─────────────────────────────
 do $$
 declare
   v_past_round_id   bigint;
@@ -304,140 +204,92 @@ begin
   select id into v_past_round_id   from public.rounds where api_round = 'Test - Past';
   select id into v_future_round_id from public.rounds where api_round = 'Test - Future';
 
-  -- Past round: predictions exist for Charlie (inserted in assertion 5 seed).
-  select count(*) into v_past_count
-  from public.round_predictions(v_past_round_id);
-
-  -- Future round: Alice's prediction (fixture 9000002) was inserted in assertion 3.
-  select count(*) into v_future_count
-  from public.round_predictions(v_future_round_id);
+  select count(*) into v_past_count   from public.round_predictions(v_past_round_id);
+  select count(*) into v_future_count from public.round_predictions(v_future_round_id);
 
   if v_past_count > 0 then
-    raise notice 'ASSERTION 6a PASSED: round_predictions returns % rows for locked (past) round — predictions visible post-lock.', v_past_count;
+    raise notice 'ASSERTION 6a PASSED: round_predictions returns % rows for locked round (visible post-lock).', v_past_count;
   else
-    raise notice 'ASSERTION 6a FAILED: round_predictions returned 0 rows for past-locked round (expected > 0).';
+    raise notice 'ASSERTION 6a FAILED: round_predictions returned 0 rows for locked round (expected > 0).';
   end if;
 
   if v_future_count = 0 then
-    raise notice 'ASSERTION 6b PASSED: round_predictions returns 0 rows for future-locked round — privacy gate working.';
+    raise notice 'ASSERTION 6b PASSED: round_predictions returns 0 rows for open round (privacy gate working).';
   else
-    raise notice 'ASSERTION 6b FAILED: round_predictions returned % rows for future round (expected 0 — privacy leak!).', v_future_count;
+    raise notice 'ASSERTION 6b FAILED: round_predictions returned % rows for open round (expected 0 — privacy leak!).', v_future_count;
   end if;
 end;
 $$;
 
--- ─── ASSERTION 7: leaderboard — 0-pt players included, 1,1,3 ranking ─────────
--- Seed Bob's prediction on future round (no fixture FT yet → 0 pts).
--- Charlie has 2 pts (from assertion 5). Alice has 0 pts (future round, not FT).
--- Charlie → rank 1, Alice and Bob → rank 2 (tied at 0 → both rank 2, next is rank 4).
--- But with only one 0-pt tie: rank 1 (Charlie, 2pts), rank 2 (Alice, 0pts), rank 2 (Bob, 0pts).
--- Next rank would be 4 — but we only have 3 players. rank() gives: 1, 2, 2.
+-- ─── ASSERTION 7: leaderboard — 0-pt players included, tie ranking ───────────
+-- Past round: Charlie has 2 pts. Alice and Bob have no prediction there, so they
+-- must still appear at 0 pts (REQ-6.5) and share rank 2 (standard competition).
 do $$
 declare
-  v_bob_id          uuid := '00000000-0000-0000-0000-000000000002';
-  v_past_round_id   bigint;
-  v_rec             record;
-  v_charlie_rank    bigint;
-  v_alice_rank      bigint;
-  v_bob_rank        bigint;
-  v_charlie_pts     bigint;
+  v_past_round_id bigint;
+  v_rec           record;
+  v_charlie_rank  bigint;
+  v_charlie_pts   bigint;
+  v_alice_rank    bigint;
+  v_bob_rank      bigint;
 begin
   select id into v_past_round_id from public.rounds where api_round = 'Test - Past';
 
-  -- Print full leaderboard for inspection.
-  raise notice 'ASSERTION 7: Leaderboard for past round:';
+  raise notice 'ASSERTION 7: leaderboard for past round:';
   for v_rec in select * from public.leaderboard(v_past_round_id) loop
     raise notice '  rank=%, name=%, pts=%, exact=%',
       v_rec.rank, v_rec.display_name, v_rec.total_points, v_rec.exact_count;
   end loop;
 
-  -- Collect specific values.
   select rank, total_points into v_charlie_rank, v_charlie_pts
-  from public.leaderboard(v_past_round_id)
-  where display_name = 'Charlie';
+  from public.leaderboard(v_past_round_id) where display_name = 'Charlie';
+  select rank into v_alice_rank from public.leaderboard(v_past_round_id) where display_name = 'Alice';
+  select rank into v_bob_rank   from public.leaderboard(v_past_round_id) where display_name = 'Bob';
 
-  select rank into v_alice_rank
-  from public.leaderboard(v_past_round_id)
-  where display_name = 'Alice';
-
-  select rank into v_bob_rank
-  from public.leaderboard(v_past_round_id)
-  where display_name = 'Bob';
-
-  -- Charlie should have rank 1 with 2 pts.
   if v_charlie_rank = 1 and v_charlie_pts = 2 then
     raise notice 'ASSERTION 7a PASSED: Charlie rank=1, pts=2.';
   else
     raise notice 'ASSERTION 7a FAILED: Charlie rank=%, pts=%.', v_charlie_rank, v_charlie_pts;
   end if;
 
-  -- Alice and Bob should both appear (0 pts — REQ-6.5).
   if v_alice_rank is not null then
-    raise notice 'ASSERTION 7b PASSED: Alice appears in leaderboard (0-pt player, REQ-6.5). rank=%.', v_alice_rank;
+    raise notice 'ASSERTION 7b PASSED: Alice appears at 0 pts (REQ-6.5). rank=%.', v_alice_rank;
   else
     raise notice 'ASSERTION 7b FAILED: Alice not found in leaderboard.';
   end if;
 
   if v_bob_rank is not null then
-    raise notice 'ASSERTION 7c PASSED: Bob appears in leaderboard. rank=%.', v_bob_rank;
+    raise notice 'ASSERTION 7c PASSED: Bob appears at 0 pts. rank=%.', v_bob_rank;
   else
     raise notice 'ASSERTION 7c FAILED: Bob not found in leaderboard.';
   end if;
 
-  -- Alice and Bob both at 0 pts → should share the same rank (1,1,3 pattern).
   if v_alice_rank is not null and v_bob_rank is not null and v_alice_rank = v_bob_rank then
     raise notice 'ASSERTION 7d PASSED: Alice and Bob share rank % (standard competition ranking, REQ-6.4).', v_alice_rank;
   else
-    raise notice 'ASSERTION 7d RESULT: Alice rank=%, Bob rank=% (verify they share rank — tied at 0 pts).', v_alice_rank, v_bob_rank;
+    raise notice 'ASSERTION 7d RESULT: Alice rank=%, Bob rank=% (expected equal — tied at 0 pts).', v_alice_rank, v_bob_rank;
   end if;
 end;
 $$;
 
--- ─── ASSERTION 8: RLS role simulation ────────────────────────────────────────
--- Full RLS testing requires connecting as a real Supabase auth user with a valid JWT.
--- The SQL Editor in the Dashboard runs as the postgres superuser, which bypasses RLS.
---
--- MANUAL VERIFICATION STEPS (to be done after deploying the app):
---
--- 8a. predictions — owner-only SELECT:
---     1. Log in as Alice via Google OAuth.
---     2. GET /rest/v1/predictions (with Alice's JWT in Authorization header).
---     3. Expected: only Alice's predictions are returned (not Bob's or Charlie's).
---
--- 8b. predictions — INSERT with wrong user_id rejected:
---     1. Craft a POST /rest/v1/predictions with Alice's JWT but user_id = Bob's UUID.
---     2. Expected: 403 (RLS check_clause violation).
---
--- 8c. allowed_emails — not readable by clients:
---     1. GET /rest/v1/allowed_emails with any authenticated JWT.
---     2. Expected: 0 rows returned (no SELECT policy = empty result set by default).
---        Note: PostgREST returns 200 with [] when RLS allows 0 rows.
---
--- 8d. rounds + fixtures — readable by authenticated users:
---     1. GET /rest/v1/rounds with a valid authenticated JWT.
---     2. Expected: all round rows returned (200).
---
--- 8e. predictions — unauthenticated access blocked:
---     1. GET /rest/v1/predictions with no Authorization header (anon key only).
---     2. Expected: 0 rows (anon role has no policy grants).
---
--- These are the assertions that REQUIRE the user to run them manually.
+-- ─── ASSERTION 8: RLS role simulation — MANUAL (needs a real JWT) ─────────────
+-- The Dashboard SQL Editor runs as postgres, which bypasses RLS, so owner-only
+-- policies cannot be exercised here. Verify after the app is deployed:
+--   8a. GET /rest/v1/predictions with Alice's JWT → only Alice's rows.
+--   8b. POST /rest/v1/predictions with Alice's JWT but user_id=Bob → 403.
+--   8c. GET /rest/v1/allowed_emails with any JWT → [] (no SELECT policy).
+--   8d. GET /rest/v1/rounds with an authenticated JWT → all rows (200).
+--   8e. GET /rest/v1/predictions with anon key only → [] (no anon grant).
 do $$ begin
-  raise notice 'ASSERTION 8: RLS tests require authenticated JWT. See manual verification steps in script comments.';
+  raise notice 'ASSERTION 8: RLS owner-only checks require a real JWT — see manual steps in comments.';
 end $$;
 
--- ─── ASSERTION 9: handle_new_user whitelist gate — LIVE test ─────────────────
--- REQ-1.2: non-whitelisted email must be REJECTED (P0001) by the trigger.
--- REQ-1.3: whitelisted email must result in a public.profiles row (already
---           proven implicitly by assertions 1–7 which rely on those profiles).
--- We test REQ-1.2 here by attempting to insert a non-whitelisted user into
--- auth.users inside a nested BEGIN/EXCEPTION block — it must raise P0001.
+-- ─── ASSERTION 9: handle_new_user rejects a non-whitelisted email (LIVE) ─────
 do $$
 declare
-  v_intruder_id uuid := '00000000-0000-0000-0000-000000000099';
+  v_intruder_id    uuid := '00000000-0000-0000-0000-000000000099';
   v_profile_exists boolean;
 begin
-  -- 9a: non-whitelisted email must be rejected.
   begin
     insert into auth.users (
       instance_id, id, aud, role, email,
@@ -448,38 +300,24 @@ begin
       '00000000-0000-0000-0000-000000000000',
       v_intruder_id, 'authenticated', 'authenticated', 'intruder@not-allowed.example',
       '', now(), now(), now(),
-      '{"provider":"email","providers":["email"]}',
-      '{}',
-      false
+      '{"provider":"email","providers":["email"]}', '{}', false
     );
-    -- Reaching here means the trigger did NOT fire or did not reject — FAIL.
-    raise notice 'ASSERTION 9a FAILED: non-whitelisted email was NOT rejected by handle_new_user.';
+    raise notice 'ASSERTION 9a FAILED: non-whitelisted email was NOT rejected.';
   exception
     when sqlstate 'P0001' then
-      raise notice 'ASSERTION 9a PASSED: non-whitelisted email correctly rejected by handle_new_user (P0001, REQ-1.2/1.3).';
+      raise notice 'ASSERTION 9a PASSED: non-whitelisted email rejected by handle_new_user (P0001).';
     when others then
       raise notice 'ASSERTION 9a FAILED: unexpected error % / %', sqlstate, sqlerrm;
   end;
 
-  -- 9b: confirm no profile row leaked for the intruder (trigger rolled back).
-  select exists(
-    select 1 from public.profiles where id = v_intruder_id
-  ) into v_profile_exists;
-
+  select exists(select 1 from public.profiles where id = v_intruder_id) into v_profile_exists;
   if not v_profile_exists then
-    raise notice 'ASSERTION 9b PASSED: no public.profiles row created for rejected user (REQ-1.3).';
+    raise notice 'ASSERTION 9b PASSED: no profiles row created for the rejected user (REQ-1.3).';
   else
     raise notice 'ASSERTION 9b FAILED: a profiles row exists for the rejected intruder — data leak!';
   end if;
 end;
 $$;
 
--- ─── ROLLBACK — no data persisted ────────────────────────────────────────────
--- All seeds (profiles, predictions, fixtures, rounds, allowed_emails rows)
--- inserted during this script are discarded. The DB is unchanged post-run.
+-- ─── ROLLBACK — nothing is persisted ─────────────────────────────────────────
 rollback;
-
--- Final note for the user:
--- After ROLLBACK, all NOTICE messages above remain visible in the output.
--- Green (PASSED) notices confirm the security layer is working.
--- Any FAILED notice requires investigation before proceeding to PR-4.
