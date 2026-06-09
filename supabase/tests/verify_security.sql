@@ -388,7 +388,9 @@ $$;
 --     2. Expected: 0 rows (anon role has no policy grants).
 --
 -- These are the assertions that REQUIRE the user to run them manually.
-raise notice 'ASSERTION 8: RLS tests require authenticated JWT. See manual verification steps in script comments.';
+do $$ begin
+  raise notice 'ASSERTION 8: RLS tests require authenticated JWT. See manual verification steps in script comments.';
+end $$;
 
 -- ─── ASSERTION 9: handle_new_user whitelist gate ─────────────────────────────
 -- The trigger fires on INSERT into auth.users, which requires the auth schema.
@@ -405,7 +407,9 @@ raise notice 'ASSERTION 8: RLS tests require authenticated JWT. See manual verif
 --     2. Expected: signup succeeds; a row appears in public.profiles.
 --     3. display_name = Google full_name (or email local part if not available).
 --
-raise notice 'ASSERTION 9: handle_new_user tests require Google OAuth flow. See manual steps in script comments.';
+do $$ begin
+  raise notice 'ASSERTION 9: handle_new_user tests require Google OAuth flow. See manual steps in script comments.';
+end $$;
 
 -- ─── ROLLBACK — no data persisted ────────────────────────────────────────────
 -- All seeds (profiles, predictions, fixtures, rounds, allowed_emails rows)
