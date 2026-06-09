@@ -6,8 +6,12 @@
 --                  idempotent grouping key by the sync Edge Function.
 --   first_kickoff -> min(fixtures.kickoff) for this round; updated by the sync
 --                    after each calendar upsert batch.
---   locks_at    -> STORED GENERATED column = first_kickoff - 1 hour (REQ-3.1).
---                  Cannot drift; computed once at write time, stored on disk.
+--   locks_at    -> first_kickoff - 1 hour (REQ-3.1). Maintained by the
+--                  set_round_locks_at trigger, NOT a GENERATED column:
+--                  (timestamptz - interval) is not IMMUTABLE (DST/timezone
+--                  dependent), so Postgres rejects it in a STORED GENERATED
+--                  expression (SQLSTATE 42P17). The trigger keeps the same
+--                  "cannot drift" guarantee with the DB as source of truth.
 --                  NULL when first_kickoff is NULL (no fixtures seeded yet).
 --   status      -> denormalized convenience for UI/cron. Authoritative lock check
 --                  is always `now() >= locks_at`, never status alone.
@@ -23,8 +27,7 @@ create table public.rounds (
   api_round     text          not null unique,
   name          text          not null,
   first_kickoff timestamptz,
-  locks_at      timestamptz
-    generated always as (first_kickoff - interval '1 hour') stored,
+  locks_at      timestamptz,
   status        public.round_status not null default 'open',
   created_at    timestamptz   not null default now()
 );
@@ -32,8 +35,30 @@ create table public.rounds (
 comment on table  public.rounds                is 'One row per matchday group-stage round.';
 comment on column public.rounds.api_round      is 'API-Football round field, e.g. "Group Stage - 1". Idempotent grouping key.';
 comment on column public.rounds.first_kickoff  is 'min(kickoff) across fixtures in this round. Set/updated by sync Edge Function.';
-comment on column public.rounds.locks_at       is 'STORED GENERATED: first_kickoff - 1 hour. Authoritative lock boundary (REQ-3.1).';
+comment on column public.rounds.locks_at       is 'first_kickoff - 1 hour. Maintained by set_round_locks_at trigger. Authoritative lock boundary (REQ-3.1).';
 comment on column public.rounds.status         is 'Denormalized convenience. Authoritative lock = now() >= locks_at, not status.';
+
+-- Maintain locks_at = first_kickoff - 1 hour on the database side.
+-- Replaces a STORED GENERATED column: (timestamptz - interval) is not IMMUTABLE
+-- (DST/timezone dependent), which Postgres forbids in generated expressions
+-- (SQLSTATE 42P17). A trigger preserves the "cannot drift" guarantee.
+create or replace function public.set_round_locks_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.locks_at := case
+    when new.first_kickoff is null then null
+    else new.first_kickoff - interval '1 hour'
+  end;
+  return new;
+end;
+$$;
+
+create trigger trg_set_round_locks_at
+  before insert or update of first_kickoff on public.rounds
+  for each row
+  execute function public.set_round_locks_at();
 
 create table public.fixtures (
   id          bigint      primary key,
