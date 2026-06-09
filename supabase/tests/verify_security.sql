@@ -21,8 +21,13 @@
 
 begin;
 
--- Result collector (temp table, discarded on rollback; SELECTed before then).
-create temp table _verify (id serial primary key, assertion text, result text, detail text);
+-- Result collector. A REGULAR table in public (not temp): the Supabase SQL
+-- Editor resets search_path between statements, which drops pg_temp and makes
+-- unqualified temp tables unresolvable in later DO blocks. A public table is
+-- always on the search_path. It is still discarded by the ROLLBACK at the end,
+-- so nothing is persisted.
+drop table if exists public._verify;
+create table public._verify (id serial primary key, assertion text, result text, detail text);
 
 -- ─── Seed step 1: whitelist the test emails ──────────────────────────────────
 insert into public.allowed_emails (email) values
