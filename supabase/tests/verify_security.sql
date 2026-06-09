@@ -12,46 +12,80 @@
 --   3. Execute. Read the NOTICE messages for each assertion result.
 --   4. The final "ROLLBACK" ensures no data is persisted.
 --
--- WHAT THIS TESTS (assertions 1–6):
+-- WHAT THIS TESTS (assertions 1–9):
 --   1. enforce_betting_lock: rejects INSERT on a past-locked round.
---   2. enforce_betting_lock: rejects UPDATE on a past-locked round.
+--   2. enforce_betting_lock: rejects UPDATE on a past-locked round (manual).
 --   3. enforce_betting_lock: allows INSERT on a future-locked round.
 --   4. compute_points: returns correct values for all scoring scenarios.
 --   5. score_fixture: updates predictions.points when fixture transitions to FT.
 --   6. round_predictions: returns 0 rows before lock, rows after lock (privacy).
 --   7. leaderboard: includes 0-pt players; standard competition ranking (1,1,3).
+--   9. handle_new_user: rejects non-whitelisted email (LIVE, REQ-1.2/1.3).
 --
 -- RLS ROLE CHECKS (assertion 8) — manual steps documented at the bottom.
 -- Full RLS simulation requires connecting as a real auth user and is not fully
 -- automated in a single SQL Editor session.
+--
+-- SEEDING APPROACH: users are seeded via auth.users + allowed_emails, which fires
+-- handle_new_user and auto-creates public.profiles. No direct profile inserts.
 
 begin;
 
--- ─── Seed: synthetic UUIDs for test users (not real auth.users rows) ─────────
--- NOTE: We insert directly into public.profiles (not auth.users) to avoid
--- triggering handle_new_user during this test script. We are testing other
--- triggers; the whitelist trigger is tested separately in assertion 9.
+-- ─── Seed: whitelist emails first, then seed auth.users through the real chain ─
+-- We insert into auth.users (as postgres superuser inside this transaction), which
+-- fires the handle_new_user AFTER INSERT trigger.  That trigger:
+--   1. Checks public.allowed_emails (whitelist gate — REQ-1.2/1.3).
+--   2. Inserts the matching public.profiles row with display_name taken from
+--      raw_user_meta_data->>'full_name' (falling back to the email local-part).
+-- We must therefore insert into allowed_emails BEFORE auth.users, and we pass
+-- full_name in raw_user_meta_data so the display_name resolves to Alice/Bob/Charlie.
+-- We do NOT insert into public.profiles manually — the trigger owns that.
 
--- Insert test emails into allowed_emails so profiles can reference them.
+-- Step 1: whitelist the test emails.
 insert into public.allowed_emails (email) values
   ('alice@test.example'),
   ('bob@test.example'),
   ('charlie@test.example')
 on conflict (email) do nothing;
 
--- Test user UUIDs (synthetic — not real auth.users rows for this test).
+-- Step 2: insert into auth.users — handle_new_user fires and creates profiles.
 do $$
 declare
   v_alice_id   uuid := '00000000-0000-0000-0000-000000000001';
   v_bob_id     uuid := '00000000-0000-0000-0000-000000000002';
   v_charlie_id uuid := '00000000-0000-0000-0000-000000000003';
 begin
-  -- Profiles (bypass handle_new_user; we test that trigger separately).
-  insert into public.profiles (id, email, display_name) values
-    (v_alice_id,   'alice@test.example',   'Alice'),
-    (v_bob_id,     'bob@test.example',     'Bob'),
-    (v_charlie_id, 'charlie@test.example', 'Charlie')
-  on conflict (id) do nothing;
+  insert into auth.users (
+    instance_id, id, aud, role, email,
+    encrypted_password, email_confirmed_at,
+    created_at, updated_at,
+    raw_app_meta_data, raw_user_meta_data, is_super_admin
+  ) values
+    (
+      '00000000-0000-0000-0000-000000000000',
+      v_alice_id, 'authenticated', 'authenticated', 'alice@test.example',
+      '', now(), now(), now(),
+      '{"provider":"email","providers":["email"]}',
+      '{"full_name":"Alice"}',
+      false
+    ),
+    (
+      '00000000-0000-0000-0000-000000000000',
+      v_bob_id, 'authenticated', 'authenticated', 'bob@test.example',
+      '', now(), now(), now(),
+      '{"provider":"email","providers":["email"]}',
+      '{"full_name":"Bob"}',
+      false
+    ),
+    (
+      '00000000-0000-0000-0000-000000000000',
+      v_charlie_id, 'authenticated', 'authenticated', 'charlie@test.example',
+      '', now(), now(), now(),
+      '{"provider":"email","providers":["email"]}',
+      '{"full_name":"Charlie"}',
+      false
+    );
+  -- handle_new_user has now created public.profiles rows for all three users.
 end;
 $$;
 
@@ -392,24 +426,53 @@ do $$ begin
   raise notice 'ASSERTION 8: RLS tests require authenticated JWT. See manual verification steps in script comments.';
 end $$;
 
--- ─── ASSERTION 9: handle_new_user whitelist gate ─────────────────────────────
--- The trigger fires on INSERT into auth.users, which requires the auth schema.
--- Testing this in the SQL editor requires inserting into auth.users directly
--- as superuser, which may have side effects. Recommended approach:
---
--- 9a. BLOCKED signup (non-whitelisted email):
---     1. Attempt Google OAuth with an email NOT in allowed_emails.
---     2. Expected: signup fails; Supabase returns a 422 "signup error".
---     3. Verify no row appears in public.profiles for that email.
---
--- 9b. ALLOWED signup (whitelisted email):
---     1. Attempt Google OAuth with an email IN allowed_emails.
---     2. Expected: signup succeeds; a row appears in public.profiles.
---     3. display_name = Google full_name (or email local part if not available).
---
-do $$ begin
-  raise notice 'ASSERTION 9: handle_new_user tests require Google OAuth flow. See manual steps in script comments.';
-end $$;
+-- ─── ASSERTION 9: handle_new_user whitelist gate — LIVE test ─────────────────
+-- REQ-1.2: non-whitelisted email must be REJECTED (P0001) by the trigger.
+-- REQ-1.3: whitelisted email must result in a public.profiles row (already
+--           proven implicitly by assertions 1–7 which rely on those profiles).
+-- We test REQ-1.2 here by attempting to insert a non-whitelisted user into
+-- auth.users inside a nested BEGIN/EXCEPTION block — it must raise P0001.
+do $$
+declare
+  v_intruder_id uuid := '00000000-0000-0000-0000-000000000099';
+  v_profile_exists boolean;
+begin
+  -- 9a: non-whitelisted email must be rejected.
+  begin
+    insert into auth.users (
+      instance_id, id, aud, role, email,
+      encrypted_password, email_confirmed_at,
+      created_at, updated_at,
+      raw_app_meta_data, raw_user_meta_data, is_super_admin
+    ) values (
+      '00000000-0000-0000-0000-000000000000',
+      v_intruder_id, 'authenticated', 'authenticated', 'intruder@not-allowed.example',
+      '', now(), now(), now(),
+      '{"provider":"email","providers":["email"]}',
+      '{}',
+      false
+    );
+    -- Reaching here means the trigger did NOT fire or did not reject — FAIL.
+    raise notice 'ASSERTION 9a FAILED: non-whitelisted email was NOT rejected by handle_new_user.';
+  exception
+    when sqlstate 'P0001' then
+      raise notice 'ASSERTION 9a PASSED: non-whitelisted email correctly rejected by handle_new_user (P0001, REQ-1.2/1.3).';
+    when others then
+      raise notice 'ASSERTION 9a FAILED: unexpected error % / %', sqlstate, sqlerrm;
+  end;
+
+  -- 9b: confirm no profile row leaked for the intruder (trigger rolled back).
+  select exists(
+    select 1 from public.profiles where id = v_intruder_id
+  ) into v_profile_exists;
+
+  if not v_profile_exists then
+    raise notice 'ASSERTION 9b PASSED: no public.profiles row created for rejected user (REQ-1.3).';
+  else
+    raise notice 'ASSERTION 9b FAILED: a profiles row exists for the rejected intruder — data leak!';
+  end if;
+end;
+$$;
 
 -- ─── ROLLBACK — no data persisted ────────────────────────────────────────────
 -- All seeds (profiles, predictions, fixtures, rounds, allowed_emails rows)
