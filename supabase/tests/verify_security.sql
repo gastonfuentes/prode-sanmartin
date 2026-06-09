@@ -286,6 +286,24 @@ begin
 end;
 $$;
 
+-- ─── ASSERTION 10: points column is not writable by client roles (mig 013) ──
+-- Checked via the catalog (has_column_privilege) — deterministic, no role/JWT sim.
+do $$
+declare
+  v_points_upd boolean := has_column_privilege('authenticated', 'public.predictions', 'points', 'UPDATE');
+  v_pred_upd   boolean := has_column_privilege('authenticated', 'public.predictions', 'pred_home', 'UPDATE');
+begin
+  insert into _verify (assertion, result, detail)
+    values ('10a. authenticated CANNOT update points',
+            case when not v_points_upd then 'PASS' else 'FAIL' end,
+            format('has_column_privilege(points,UPDATE) = %s (expected false)', v_points_upd));
+  insert into _verify (assertion, result, detail)
+    values ('10b. authenticated CAN still update picks',
+            case when v_pred_upd then 'PASS' else 'FAIL' end,
+            format('has_column_privilege(pred_home,UPDATE) = %s (expected true)', v_pred_upd));
+end;
+$$;
+
 -- ─── RESULTS: returned to the client BEFORE the rollback discards the seeds ──
 select id, assertion, result, detail from _verify order by id;
 
