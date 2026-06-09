@@ -1,9 +1,11 @@
 /**
  * Pure scoring and lock functions for the prediction game.
  *
- * These are the TypeScript mirror of the SQL scoring logic in
- * supabase/migrations/008_compute_points.sql (ADR-7).
- * Both must be kept in sync — the SQL uses the same sign() approach.
+ * IMPORTANT — ADR-7 COUPLING:
+ *   computePoints() is the TypeScript mirror of the SQL function
+ *   public.compute_points() defined in supabase/migrations/008_compute_points.sql.
+ *   Both implementations use the same sign()-based logic and MUST be kept in sync.
+ *   Any change to the scoring rules must be applied to BOTH files.
  */
 
 // ─── Types ──────────────────────────────────────────────────────────────────
