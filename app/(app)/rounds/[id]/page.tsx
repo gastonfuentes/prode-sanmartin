@@ -129,36 +129,37 @@ export default async function RoundPage({ params }: RoundPageProps) {
   }>;
 
   return (
-    <div className="flex flex-col gap-6 md:flex-row md:items-start md:gap-8">
-      {/* ── LEFT COLUMN: fixtures + prediction form ─────────────────────── */}
-      <div className="min-w-0 flex-1">
-        {/* Round header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">{roundLabel}</h1>
-          {locked ? (
-            <p className="mt-1 text-sm text-amber-700">
-              Esta fecha está cerrada. Ya no se aceptan pronósticos.
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_16rem] md:items-start md:gap-x-8">
+      {/* ── Round header — col 1 / row 1 on md, so the right panel can start
+          aligned with the first fixture card (row 2), not with this header. */}
+      <div className="md:col-start-1 md:row-start-1">
+        <h1 className="text-2xl font-bold text-gray-900">{roundLabel}</h1>
+        {locked ? (
+          <p className="mt-1 text-sm text-amber-700">
+            Esta fecha está cerrada. Ya no se aceptan pronósticos.
+          </p>
+        ) : (
+          round.locks_at && (
+            <p className="mt-1 text-sm text-gray-500">
+              Los pronósticos cierran el{" "}
+              <time dateTime={round.locks_at}>
+                {new Date(round.locks_at).toLocaleString("es-AR", {
+                  weekday: "short",
+                  day: "numeric",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  timeZone: "America/Argentina/Buenos_Aires",
+                  timeZoneName: "short",
+                })}
+              </time>
             </p>
-          ) : (
-            round.locks_at && (
-              <p className="mt-1 text-sm text-gray-500">
-                Los pronósticos cierran el{" "}
-                <time dateTime={round.locks_at}>
-                  {new Date(round.locks_at).toLocaleString("es-AR", {
-                    weekday: "short",
-                    day: "numeric",
-                    month: "short",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    timeZone: "America/Argentina/Buenos_Aires",
-                    timeZoneName: "short",
-                  })}
-                </time>
-              </p>
-            )
-          )}
-        </div>
+          )
+        )}
+      </div>
 
+      {/* ── LEFT COLUMN: fixtures + prediction form — col 1 / row 2 ──────── */}
+      <div className="min-w-0 md:col-start-1 md:row-start-2">
         {fixtures.length === 0 ? (
           <div className="py-16 text-center text-sm text-gray-500">
             No hay partidos programados para esta fecha.
@@ -174,8 +175,9 @@ export default async function RoundPage({ params }: RoundPageProps) {
         )}
       </div>
 
-      {/* ── RIGHT PANEL: Participantes + Posiciones ──────────────────────── */}
-      <aside className="w-full shrink-0 space-y-6 md:w-64">
+      {/* ── RIGHT PANEL: Participantes + Posiciones — col 2 / row 2, so it
+          lines up with the top of the first fixture card. ──────────────── */}
+      <aside className="space-y-6 md:col-start-2 md:row-start-2">
         {/* Participantes */}
         <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
           <h2 className="mb-3 text-sm font-semibold text-gray-900">

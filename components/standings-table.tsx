@@ -42,12 +42,12 @@ export function StandingsTable({ title, rows }: StandingsTableProps) {
       {rows.length === 0 ? (
         <p className="text-xs text-gray-400">Sin datos disponibles.</p>
       ) : (
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead>
             <tr className="border-b border-gray-100 text-xs text-gray-400">
-              <th className="pb-1 text-left font-medium">Pos.</th>
+              <th className="w-8 pb-1 text-left font-medium">Pos.</th>
               <th className="pb-1 text-left font-medium">Jugador</th>
-              <th className="pb-1 text-right font-medium">Pts.</th>
+              <th className="w-10 pb-1 text-right font-medium">Pts.</th>
             </tr>
           </thead>
           <tbody>
@@ -79,7 +79,7 @@ export function StandingsTable({ title, rows }: StandingsTableProps) {
                         {getInitials(row.display_name)}
                       </span>
                     )}
-                    <span className="truncate text-sm text-gray-800">
+                    <span className="min-w-0 truncate text-sm text-gray-800">
                       {row.display_name ?? "—"}
                     </span>
                   </div>

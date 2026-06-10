@@ -62,7 +62,7 @@ export function ParticipantsList({ profiles }: ParticipantsListProps) {
               {getInitials(profile.display_name)}
             </span>
           )}
-          <span className="truncate text-sm text-gray-700">
+          <span className="min-w-0 truncate text-sm text-gray-700">
             {profile.display_name ?? "—"}
           </span>
         </li>
