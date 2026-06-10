@@ -6,12 +6,20 @@
 --   - pg_net   : enables net.http_post() for async HTTP calls
 -- Both are available on Supabase Free tier.
 --
--- Secret setup (run BEFORE applying this migration via supabase db push):
---   supabase secrets set CRON_TOKEN=<your-random-secret>
+-- Secret setup (run BEFORE applying this migration). pg_cron runs INSIDE Postgres
+-- and CANNOT read Edge Function secrets, so the token must live in BOTH places:
+--   1. Edge Function side (so the function can compare it):
+--        supabase secrets set CRON_TOKEN=<random-secret>
+--   2. pg_cron side — store the SAME secret AND the project anon key in Vault,
+--      read at run time from vault.decrypted_secrets (run once in the SQL Editor;
+--      these values are NOT committed to git):
+--        select vault.create_secret('<random-secret>', 'cron_token');
+--        select vault.create_secret('<project-anon-key>', 'anon_key');
 --
--- The cron jobs read the secret via current_setting('app.cron_token').
--- That setting is injected at runtime by the pg_cron worker when the job runs.
--- The Edge Function verifies the token in the Authorization header.
+-- The cron jobs authenticate in two independent layers:
+--   - Authorization: Bearer <anon_key>  → passes the Supabase gateway (verify_jwt)
+--   - x-cron-secret: <cron_token>       → the Edge Function compares against CRON_TOKEN
+-- Both are pulled from Vault at run time, never hard-coded here.
 --
 -- Edge Function URL pattern: https://<project-ref>.supabase.co/functions/v1/sync
 -- Replace <project-ref> with wnojevehvksljrhorpiz (us-west-2 project ref).
@@ -64,11 +72,12 @@ select cron.schedule(
   'sync-calendar',
   '0 6 * * *',
   $$
-    select extensions.net.http_post(
+    select net.http_post(
       url     := 'https://wnojevehvksljrhorpiz.supabase.co/functions/v1/sync?mode=calendar',
       headers := jsonb_build_object(
         'Content-Type',  'application/json',
-        'Authorization', 'Bearer ' || current_setting('app.cron_token', true)
+        'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'anon_key'),
+        'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'cron_token')
       ),
       body    := '{}'::jsonb
     );
@@ -86,11 +95,12 @@ select cron.schedule(
   'sync-results',
   '0 */2 * * *',
   $$
-    select extensions.net.http_post(
+    select net.http_post(
       url     := 'https://wnojevehvksljrhorpiz.supabase.co/functions/v1/sync?mode=results',
       headers := jsonb_build_object(
         'Content-Type',  'application/json',
-        'Authorization', 'Bearer ' || current_setting('app.cron_token', true)
+        'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'anon_key'),
+        'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'cron_token')
       ),
       body    := '{}'::jsonb
     );

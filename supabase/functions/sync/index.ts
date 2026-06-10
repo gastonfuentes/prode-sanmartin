@@ -5,10 +5,15 @@
  *   ?mode=calendar  — fetch the full group-stage schedule (once per day, seeds fixtures)
  *   ?mode=results   — fetch current matches, write FT results (triggers scoring)
  *
- * Authorization: callers must pass a shared secret in the Authorization header.
- *   Authorization: Bearer <CRON_TOKEN>
- * This token is set as a Supabase secret: `supabase secrets set CRON_TOKEN=<value>`
- * pg_cron reads it via current_setting('app.cron_token') and passes it here.
+ * Authorization (two independent layers):
+ *   1. Supabase gateway (verify_jwt): the caller passes a valid JWT — the project
+ *      anon key — in the `Authorization: Bearer` header. pg_cron reads it from
+ *      Supabase Vault (name 'anon_key').
+ *   2. App-level: the caller passes the shared secret in the `x-cron-secret` header.
+ *      The secret is set as an Edge secret (`supabase secrets set CRON_TOKEN=<value>`,
+ *      read here via Deno.env) AND stored in Vault as 'cron_token' (read by pg_cron).
+ *      The two values MUST match. We compare x-cron-secret, NOT the Authorization
+ *      header, so the gateway's JWT check and our app check stay independent.
  *
  * Data source: ESPN unofficial API (no key required).
  *   https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard
@@ -45,18 +50,17 @@ const WC_DATE_RANGE = "20260611-20260628";
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
-  // ── Auth: verify cron_token ────────────────────────────────────────────────
+  // ── Auth: verify the shared cron secret (x-cron-secret header) ──────────────
+  // The Supabase gateway already validated the Authorization JWT (anon key) before
+  // this code runs. Here we enforce the app-level secret independently, so a leaked
+  // anon key alone cannot trigger a sync.
   const cronToken = Deno.env.get("CRON_TOKEN");
   if (!cronToken) {
     return new Response("CRON_TOKEN secret not configured", { status: 500 });
   }
 
-  const authHeader = req.headers.get("Authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : authHeader;
-
-  if (token !== cronToken) {
+  const provided = req.headers.get("x-cron-secret") ?? "";
+  if (provided !== cronToken) {
     return new Response("Unauthorized", { status: 401 });
   }
 
