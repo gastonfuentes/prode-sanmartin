@@ -47,16 +47,16 @@ export async function submitPredictions(
   if (!payload.ok) {
     switch (payload.kind) {
       case "nothingToSubmit":
-        return { ok: false, error: "Enter at least one prediction before saving." };
+        return { ok: false, error: "Ingresá al menos un pronóstico antes de guardar." };
       case "incomplete":
         return {
           ok: false,
-          error: `Incomplete prediction for fixture(s): ${payload.fixtureIds.join(", ")}. Fill both scores or leave both empty.`,
+          error: `Completá ambos resultados o dejá los dos vacíos para los partidos: ${payload.fixtureIds.join(", ")}.`,
         };
       case "invalid":
         return {
           ok: false,
-          error: `Fixture ${payload.fixtureId}: ${payload.error}`,
+          error: `Partido ${payload.fixtureId}: ${payload.error}`,
         };
     }
   }
@@ -70,7 +70,7 @@ export async function submitPredictions(
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return { ok: false, error: "Not authenticated." };
+    return { ok: false, error: "No autenticado." };
   }
 
   // Build upsert rows with user_id explicitly set (RLS insert check requires
@@ -95,12 +95,12 @@ export async function submitPredictions(
     ) {
       return {
         ok: false,
-        error: "This round is locked. Predictions are no longer accepted.",
+        error: "Esta fecha está cerrada. Ya no se aceptan pronósticos.",
       };
     }
 
     // Other DB errors (constraint violations, etc.)
-    return { ok: false, error: "Failed to save predictions. Please try again." };
+    return { ok: false, error: "Error al guardar los pronósticos. Por favor intentá de nuevo." };
   }
 
   // Revalidate so the RSC refetches fresh predictions after submit

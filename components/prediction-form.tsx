@@ -99,18 +99,18 @@ export function PredictionForm({
     if (!payload.ok) {
       switch (payload.kind) {
         case "nothingToSubmit":
-          setSubmitError("Enter at least one prediction before saving.");
+          setSubmitError("Ingresá al menos un pronóstico antes de guardar.");
           return;
 
         case "incomplete": {
           const names = payload.fixtureIds
             .map((id) => {
               const f = fixtureById.get(id);
-              return f ? `${f.home_team} vs ${f.away_team}` : `fixture ${id}`;
+              return f ? `${f.home_team} vs ${f.away_team}` : `partido ${id}`;
             })
             .join(", ");
           setSubmitError(
-            `Complete both scores or leave both empty: ${names}`
+            `Completá ambos resultados o dejá los dos vacíos: ${names}`
           );
           return;
         }
@@ -119,7 +119,7 @@ export function PredictionForm({
           const f = fixtureById.get(payload.fixtureId);
           const label = f
             ? `${f.home_team} vs ${f.away_team}`
-            : `fixture ${payload.fixtureId}`;
+            : `partido ${payload.fixtureId}`;
           setSubmitError(`${label}: ${payload.error}`);
           return;
         }
@@ -146,7 +146,7 @@ export function PredictionForm({
           role="status"
           className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800"
         >
-          Predictions are locked for this round. Good luck!
+          Esta fecha está cerrada. Ya no se aceptan pronósticos.
         </div>
       )}
 
@@ -156,7 +156,7 @@ export function PredictionForm({
           role="status"
           className="mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-800"
         >
-          Predictions saved successfully.
+          Pronósticos guardados.
         </div>
       )}
 
@@ -231,7 +231,7 @@ export function PredictionForm({
                       handleChange(fixture.id, "home", e.target.value)
                     }
                     disabled={isLocked || isPending}
-                    aria-label={`${fixture.home_team} predicted goals`}
+                    aria-label={`Goles predichos para ${fixture.home_team}`}
                     className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                   />
                   <span className="text-lg font-bold text-gray-400">–</span>
@@ -245,7 +245,7 @@ export function PredictionForm({
                       handleChange(fixture.id, "away", e.target.value)
                     }
                     disabled={isLocked || isPending}
-                    aria-label={`${fixture.away_team} predicted goals`}
+                    aria-label={`Goles predichos para ${fixture.away_team}`}
                     className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                   />
                 </div>
@@ -281,7 +281,7 @@ export function PredictionForm({
             disabled={isPending}
             className="w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isPending ? "Saving…" : "Save predictions"}
+            {isPending ? "Guardando…" : "Guardar"}
           </button>
         </div>
       )}

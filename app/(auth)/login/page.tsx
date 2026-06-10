@@ -25,7 +25,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           Prode San Martín
         </h1>
         <p className="mb-8 text-center text-sm text-gray-500">
-          Group stage prediction game
+          Pronósticos de la fase de grupos
         </p>
 
         {isAccessDenied && (
@@ -33,8 +33,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             role="alert"
             className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
           >
-            Your email address is not authorized to access this app. Contact
-            the organizer to be added to the allowlist.
+            Acceso denegado. Tu cuenta no está autorizada para acceder a esta app. Contactá al organizador para que te agregue.
           </div>
         )}
 

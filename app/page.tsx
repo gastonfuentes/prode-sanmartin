@@ -41,7 +41,7 @@ export default async function RootPage() {
         <div className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-md text-center">
           <h1 className="mb-2 text-2xl font-bold text-gray-900">Prode San Martín</h1>
           <p className="text-sm text-gray-500">
-            No rounds available yet. Check back soon.
+            Todavía no hay fechas disponibles. Volvé pronto.
           </p>
         </div>
       </main>

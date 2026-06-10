@@ -27,7 +27,7 @@ export function SignOutButton() {
       type="button"
       className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
     >
-      Sign out
+      Cerrar sesión
     </button>
   );
 }
