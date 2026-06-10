@@ -150,7 +150,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
                     month: "short",
                     hour: "2-digit",
                     minute: "2-digit",
-                    timeZone: "UTC",
+                    timeZone: "America/Argentina/Buenos_Aires",
                     timeZoneName: "short",
                   })}
                 </time>

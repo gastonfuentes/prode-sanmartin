@@ -174,13 +174,13 @@ export function PredictionForm({
         {fixtures.map((fixture) => {
           const entry = formState[fixture.id] ?? { home: "", away: "" };
           const kickoff = new Date(fixture.kickoff);
-          const kickoffLabel = kickoff.toLocaleString("en-GB", {
+          const kickoffLabel = kickoff.toLocaleString("es-AR", {
             weekday: "short",
             day: "numeric",
             month: "short",
             hour: "2-digit",
             minute: "2-digit",
-            timeZone: "UTC",
+            timeZone: "America/Argentina/Buenos_Aires",
             timeZoneName: "short",
           });
 
