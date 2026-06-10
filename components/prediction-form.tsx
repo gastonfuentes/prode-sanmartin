@@ -33,12 +33,16 @@ interface Fixture {
   away_logo: string | null;
   group_label: string | null;
   kickoff: string;
+  goals_home: number | null;
+  goals_away: number | null;
+  status: string;
 }
 
 interface ExistingPrediction {
   fixture_id: number;
   pred_home: number;
   pred_away: number;
+  points: number;
 }
 
 interface PredictionFormProps {
@@ -52,6 +56,19 @@ interface PredictionFormProps {
   ) => Promise<SubmitPredictionsResult>;
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Tailwind classes for the points badge shown on a finished fixture. */
+function pointsAppearance(points: number): { label: string; badge: string } {
+  if (points >= 2) {
+    return { label: "+2", badge: "bg-green-100 text-green-700" };
+  }
+  if (points === 1) {
+    return { label: "+1", badge: "bg-amber-100 text-amber-700" };
+  }
+  return { label: "0 pts", badge: "bg-gray-100 text-gray-500" };
+}
+
 // ── PredictionForm ────────────────────────────────────────────────────────────
 
 export function PredictionForm({
@@ -63,6 +80,11 @@ export function PredictionForm({
 }: PredictionFormProps) {
   const [formState, setFormState] = useState(() =>
     buildFormState(fixtures, predictions)
+  );
+  // Saved predictions keyed by fixture — source of truth for finished cards
+  // (real prediction + points), independent of the editable formState.
+  const predictionByFixture = new Map(
+    predictions.map((p) => [p.fixture_id, p])
   );
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
@@ -185,15 +207,20 @@ export function PredictionForm({
             timeZoneName: "short",
           });
           const group = getGroupAppearance(fixture.group_label);
+          const isFinished =
+            fixture.status === "FT" &&
+            fixture.goals_home !== null &&
+            fixture.goals_away !== null;
+          const userPrediction = predictionByFixture.get(fixture.id);
 
           return (
             <div
               key={fixture.id}
-              className={`rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm ${
-                group ? `border-l-4 ${group.bar}` : ""
-              }`}
+              className={`rounded-xl border border-gray-200 px-4 py-4 shadow-sm ${
+                isFinished ? "bg-gray-50" : "bg-white"
+              } ${group ? `border-l-4 ${group.bar}` : ""}`}
             >
-              {/* Card header: kickoff time + group badge */}
+              {/* Card header: kickoff time + group badge + finished badge */}
               <div className="mb-3 flex items-center justify-center gap-2">
                 <p className="text-xs text-gray-400">{kickoffLabel}</p>
                 {group && (
@@ -201,6 +228,11 @@ export function PredictionForm({
                     className={`rounded-full px-2 py-0.5 text-xs font-medium ${group.badge}`}
                   >
                     {group.label}
+                  </span>
+                )}
+                {isFinished && (
+                  <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-600">
+                    Finalizado
                   </span>
                 )}
               </div>
@@ -225,36 +257,47 @@ export function PredictionForm({
                   )}
                 </div>
 
-                {/* Score inputs */}
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    max={99}
-                    step={1}
-                    value={entry.home}
-                    onChange={(e) =>
-                      handleChange(fixture.id, "home", e.target.value)
-                    }
-                    disabled={isLocked || isPending}
-                    aria-label={`Goles predichos para ${fixture.home_team}`}
-                    className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                  />
-                  <span className="text-lg font-bold text-gray-400">–</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={99}
-                    step={1}
-                    value={entry.away}
-                    onChange={(e) =>
-                      handleChange(fixture.id, "away", e.target.value)
-                    }
-                    disabled={isLocked || isPending}
-                    aria-label={`Goles predichos para ${fixture.away_team}`}
-                    className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                  />
-                </div>
+                {/* Final score (finished) or score inputs (pending) */}
+                {isFinished ? (
+                  <div
+                    className="flex shrink-0 items-center gap-1.5 text-lg font-bold text-gray-900"
+                    aria-label={`Resultado final: ${fixture.home_team} ${fixture.goals_home}, ${fixture.away_team} ${fixture.goals_away}`}
+                  >
+                    <span className="w-12 text-center">{fixture.goals_home}</span>
+                    <span className="text-gray-400">–</span>
+                    <span className="w-12 text-center">{fixture.goals_away}</span>
+                  </div>
+                ) : (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={99}
+                      step={1}
+                      value={entry.home}
+                      onChange={(e) =>
+                        handleChange(fixture.id, "home", e.target.value)
+                      }
+                      disabled={isLocked || isPending}
+                      aria-label={`Goles predichos para ${fixture.home_team}`}
+                      className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                    />
+                    <span className="text-lg font-bold text-gray-400">–</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={99}
+                      step={1}
+                      value={entry.away}
+                      onChange={(e) =>
+                        handleChange(fixture.id, "away", e.target.value)
+                      }
+                      disabled={isLocked || isPending}
+                      aria-label={`Goles predichos para ${fixture.away_team}`}
+                      className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                    />
+                  </div>
+                )}
 
                 {/* Away team */}
                 <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5">
@@ -274,6 +317,26 @@ export function PredictionForm({
                   </span>
                 </div>
               </div>
+
+              {/* Finished footer: user's prediction + points earned */}
+              {isFinished && (
+                <div className="mt-3 flex items-center justify-center gap-2 border-t border-gray-200 pt-3 text-xs">
+                  <span className="text-gray-500">
+                    {userPrediction
+                      ? `Tu pronóstico: ${userPrediction.pred_home} – ${userPrediction.pred_away}`
+                      : "Sin pronóstico"}
+                  </span>
+                  {userPrediction && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 font-semibold ${
+                        pointsAppearance(userPrediction.points).badge
+                      }`}
+                    >
+                      {pointsAppearance(userPrediction.points).label}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

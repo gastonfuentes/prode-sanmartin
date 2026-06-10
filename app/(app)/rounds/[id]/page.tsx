@@ -101,12 +101,13 @@ export default async function RoundPage({ params }: RoundPageProps) {
     fixture_id: number;
     pred_home: number;
     pred_away: number;
+    points: number;
   }> = [];
 
   if (fixtureIds.length > 0) {
     const { data: preds } = await supabase
       .from("predictions")
-      .select("fixture_id, pred_home, pred_away")
+      .select("fixture_id, pred_home, pred_away, points")
       .in("fixture_id", fixtureIds);
 
     predictions = preds ?? [];
