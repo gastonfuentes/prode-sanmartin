@@ -19,7 +19,8 @@
  *   https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard
  *
  * Pure mapping logic (assignMatchdays, mapToFixtureRows, filterCompleted) lives in
- * ../../lib/sync/espn.ts (no Deno-only imports) and is unit-tested with Vitest.
+ * ./espn.ts (no Deno-only imports) — co-located so the Supabase bundler uploads it,
+ * and unit-tested with Vitest (see espn.test.ts).
  *
  * NOT unit-tested (Deno glue rationale):
  *   This file contains Deno.serve, fetch, and @supabase/supabase-js writes — all
@@ -37,7 +38,7 @@ import {
   mapToFixtureRows,
   type EspnEvent,
   type EspnScoreboardResponse,
-} from "../../lib/sync/espn.ts";
+} from "./espn.ts";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
