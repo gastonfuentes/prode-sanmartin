@@ -34,16 +34,21 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   assignMatchdays,
+  buildTeamGroupMap,
   filterCompleted,
   mapToFixtureRows,
   type EspnEvent,
   type EspnScoreboardResponse,
+  type EspnStandingsResponse,
 } from "./espn.ts";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const ESPN_BASE =
   "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard";
+
+const ESPN_STANDINGS =
+  "https://site.api.espn.com/apis/v2/sports/soccer/fifa.world/standings?season=2026";
 
 /** WC 2026 group stage date range (inclusive). June 11–27 is exactly the 72
  *  group matches; June 28 begins the Round of 32, which is out of scope. */
@@ -117,9 +122,17 @@ Deno.serve(async (req: Request) => {
 async function runCalendar(
   supabase: ReturnType<typeof createClient>
 ): Promise<Response> {
-  const events = await fetchEspnEvents(WC_DATE_RANGE);
+  // Fetch scoreboard (fixtures) and standings (group labels) in parallel
+  const [events, standingsData] = await Promise.all([
+    fetchEspnEvents(WC_DATE_RANGE),
+    fetchEspnStandings(),
+  ]);
+
+  // Build group map (teamId → groupName) — best-effort; falls back to empty map
+  const groupMap = standingsData ? buildTeamGroupMap(standingsData) : new Map<string, string>();
+
   const matchdays = assignMatchdays(events);
-  const { fixtures, rounds } = mapToFixtureRows(events, matchdays);
+  const { fixtures, rounds } = mapToFixtureRows(events, matchdays, groupMap);
 
   // 1. Upsert rounds (api_round is the unique key)
   const { error: roundsError } = await supabase.from("rounds").upsert(
@@ -284,6 +297,25 @@ async function fetchEspnEvents(dates: string): Promise<EspnEvent[]> {
   }
   const data: EspnScoreboardResponse = await res.json();
   return data.events ?? [];
+}
+
+/**
+ * Fetch ESPN WC 2026 standings to build the teamId → groupName map.
+ * Returns null on any error so calendar mode degrades gracefully
+ * (group_label stays null; logos + fixture data are unaffected).
+ */
+async function fetchEspnStandings(): Promise<EspnStandingsResponse | null> {
+  try {
+    const res = await fetch(ESPN_STANDINGS);
+    if (!res.ok) {
+      console.warn(`[sync] standings fetch failed: ${res.status} ${res.statusText}`);
+      return null;
+    }
+    return (await res.json()) as EspnStandingsResponse;
+  } catch (err) {
+    console.warn("[sync] standings fetch error:", err instanceof Error ? err.message : String(err));
+    return null;
+  }
 }
 
 /** Format a Date as YYYYMMDD for the ESPN dates param. */

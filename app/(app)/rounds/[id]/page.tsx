@@ -58,7 +58,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
   const { data: fixtures, error: fixturesError } = await supabase
     .from("fixtures")
     .select(
-      "id, home_team, away_team, home_logo, away_logo, kickoff, goals_home, goals_away, status"
+      "id, home_team, away_team, home_logo, away_logo, group_label, kickoff, goals_home, goals_away, status"
     )
     .eq("round_id", roundId)
     .order("kickoff", { ascending: true });

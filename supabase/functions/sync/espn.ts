@@ -17,6 +17,8 @@ export interface EspnCompetitor {
   team: {
     id: string;
     displayName: string;
+    /** Flag/crest URL from the scoreboard endpoint. May be absent for some teams. */
+    logo?: string;
   };
 }
 
@@ -43,6 +45,30 @@ export interface EspnScoreboardResponse {
   events: EspnEvent[];
 }
 
+// ─── ESPN Standings API types ─────────────────────────────────────────────────
+// Used to build a teamId → groupName map.
+// Endpoint: https://site.api.espn.com/apis/v2/sports/soccer/fifa.world/standings?season=2026
+// Response shape: { children: [ { name: "Group A", standings: { entries: [ { team: { id, displayName } } ] } } ] }
+// Note: standings entries use team.logos[] (array with href), but we only need team.id here.
+
+export interface EspnStandingsEntry {
+  team: {
+    id: string;
+    displayName: string;
+  };
+}
+
+export interface EspnStandingsGroup {
+  name: string; // e.g. "Group A"
+  standings: {
+    entries: EspnStandingsEntry[];
+  };
+}
+
+export interface EspnStandingsResponse {
+  children: EspnStandingsGroup[];
+}
+
 // ─── Output row types (match the DB schema in 004_rounds_fixtures.sql) ────────
 
 /**
@@ -50,15 +76,20 @@ export interface EspnScoreboardResponse {
  * `id` is the ESPN event id cast to a number (fits in bigint).
  * `matchday` is a 1-based integer (1, 2, or 3) used by the caller to
  *   look up the round_id after rounds are upserted first.
+ * `home_logo` / `away_logo`: flag/crest URLs from the ESPN scoreboard (null if absent).
+ * `group_label`: group name from the standings map (e.g. "Group A"), null if not found.
  */
 export interface FixtureRow {
   id: number;
   home_team: string;
   away_team: string;
+  home_logo: string | null;
+  away_logo: string | null;
   kickoff: string;
   goals_home: number | null;
   goals_away: number | null;
   status: string; // "NS" | "FT"
+  group_label: string | null;
   matchday: number; // 1 | 2 | 3 — caller resolves to round_id
 }
 
@@ -66,6 +97,34 @@ export interface FixtureRow {
 export interface RoundRow {
   api_round: string; // e.g. "Matchday 1"
   name: string; // same as api_round for display
+}
+
+// ─── buildTeamGroupMap ────────────────────────────────────────────────────────
+
+/**
+ * Builds a Map from ESPN team id to group name from the WC standings response.
+ *
+ * Matching by team.id (not displayName) is intentional — avoids name-variant
+ * mismatches (e.g. "USA" vs "United States"). Both the scoreboard and standings
+ * endpoints share the same stable numeric team ids.
+ *
+ * @param response - The full standings response (children[] of groups).
+ * @returns Map<teamId: string, groupName: string>
+ */
+export function buildTeamGroupMap(
+  response: EspnStandingsResponse
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const group of response.children) {
+    const groupName = group.name;
+    for (const entry of group.standings.entries) {
+      const id = entry.team.id;
+      if (id) {
+        map.set(id, groupName);
+      }
+    }
+  }
+  return map;
 }
 
 // ─── assignMatchdays ──────────────────────────────────────────────────────────
@@ -142,12 +201,18 @@ export function filterCompleted(events: EspnEvent[]): EspnEvent[] {
  * Goals are mapped only for completed events (completed === true). For
  * non-completed events goals_home / goals_away are null and status is "NS".
  *
+ * Logos: populated from each competitor's team.logo field (null if absent).
+ * Group label: resolved via the optional groupMap (teamId → groupName).
+ *   Uses the home team's id first; falls back to the away team's id.
+ *   Null if neither team is found or no groupMap is provided.
+ *
  * NOTE: fixtures.round_id is NOT set here — the caller (Deno glue in index.ts)
  * must resolve matchday → round_id after upserting rounds into the DB.
  */
 export function mapToFixtureRows(
   events: EspnEvent[],
-  matchdays: Map<string, number>
+  matchdays: Map<string, number>,
+  groupMap?: Map<string, string>
 ): { fixtures: FixtureRow[]; rounds: RoundRow[] } {
   // Build unique rounds
   const roundSet = new Set<number>();
@@ -176,14 +241,22 @@ export function mapToFixtureRows(
 
     const completed = comp.status.type.completed;
 
+    // Resolve group label: home team id first, fall back to away team id
+    const groupLabel = groupMap
+      ? (groupMap.get(home.team.id) ?? groupMap.get(away.team.id) ?? null)
+      : null;
+
     fixtures.push({
       id: parseInt(event.id, 10),
       home_team: home.team.displayName,
       away_team: away.team.displayName,
+      home_logo: home.team.logo ?? null,
+      away_logo: away.team.logo ?? null,
       kickoff: event.date,
       goals_home: completed ? parseInt(home.score, 10) : null,
       goals_away: completed ? parseInt(away.score, 10) : null,
       status: completed ? "FT" : "NS",
+      group_label: groupLabel,
       matchday,
     });
   }

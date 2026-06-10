@@ -30,6 +30,7 @@ interface Fixture {
   away_team: string;
   home_logo: string | null;
   away_logo: string | null;
+  group_label: string | null;
   kickoff: string;
 }
 
@@ -188,28 +189,34 @@ export function PredictionForm({
               key={fixture.id}
               className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm"
             >
-              {/* Kickoff time */}
-              <p className="mb-3 text-center text-xs text-gray-400">
-                {kickoffLabel}
-              </p>
+              {/* Card header: kickoff time + group badge */}
+              <div className="mb-3 flex items-center justify-center gap-2">
+                <p className="text-xs text-gray-400">{kickoffLabel}</p>
+                {fixture.group_label && (
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                    {fixture.group_label}
+                  </span>
+                )}
+              </div>
 
               {/* Teams + score inputs */}
               <div className="flex items-center justify-center gap-3">
                 {/* Home team */}
-                <div className="flex min-w-0 flex-1 flex-col items-end gap-1">
+                <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+                  <span className="truncate text-sm font-medium text-gray-800">
+                    {fixture.home_team}
+                  </span>
                   {fixture.home_logo && (
                     /* eslint-disable-next-line @next/next/no-img-element */
                     <img
                       src={fixture.home_logo}
-                      alt=""
-                      width={28}
-                      height={28}
-                      className="h-7 w-7 object-contain"
+                      alt={fixture.home_team}
+                      width={20}
+                      height={20}
+                      loading="lazy"
+                      className="h-5 w-5 shrink-0 object-contain"
                     />
                   )}
-                  <span className="truncate text-sm font-medium text-gray-800">
-                    {fixture.home_team}
-                  </span>
                 </div>
 
                 {/* Score inputs */}
@@ -244,15 +251,16 @@ export function PredictionForm({
                 </div>
 
                 {/* Away team */}
-                <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5">
                   {fixture.away_logo && (
                     /* eslint-disable-next-line @next/next/no-img-element */
                     <img
                       src={fixture.away_logo}
-                      alt=""
-                      width={28}
-                      height={28}
-                      className="h-7 w-7 object-contain"
+                      alt={fixture.away_team}
+                      width={20}
+                      height={20}
+                      loading="lazy"
+                      className="h-5 w-5 shrink-0 object-contain"
                     />
                   )}
                   <span className="truncate text-sm font-medium text-gray-800">
