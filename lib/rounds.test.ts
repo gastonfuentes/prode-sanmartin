@@ -30,7 +30,7 @@ function makeRound(
   return {
     id,
     name: `Round ${id}`,
-    api_round: `Group Stage - ${id}`,
+    api_round: `Matchday ${id}`,
     first_kickoff: firstKickoff,
     locks_at: locksAt,
     status: "open" as const,
@@ -127,7 +127,15 @@ describe("selectCurrentRound", () => {
 // ── roundLabelFromApiRound ──────────────────────────────────────────────────
 
 describe("roundLabelFromApiRound", () => {
-  it("extracts the matchday number and returns 'Fecha N'", () => {
+  it("extracts the matchday number from the real sync format 'Matchday N'", () => {
+    // The calendar sync writes api_round as "Matchday N" (see
+    // supabase/functions/sync/index.ts), NOT "Group Stage - N".
+    expect(roundLabelFromApiRound("Matchday 1")).toBe("Fecha 1");
+    expect(roundLabelFromApiRound("Matchday 3")).toBe("Fecha 3");
+    expect(roundLabelFromApiRound("Matchday 12")).toBe("Fecha 12");
+  });
+
+  it("still supports the legacy 'Group Stage - N' format", () => {
     expect(roundLabelFromApiRound("Group Stage - 1")).toBe("Fecha 1");
     expect(roundLabelFromApiRound("Group Stage - 3")).toBe("Fecha 3");
     expect(roundLabelFromApiRound("Group Stage - 12")).toBe("Fecha 12");
