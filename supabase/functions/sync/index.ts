@@ -45,8 +45,9 @@ import {
 const ESPN_BASE =
   "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard";
 
-/** WC 2026 group stage date range (inclusive). */
-const WC_DATE_RANGE = "20260611-20260628";
+/** WC 2026 group stage date range (inclusive). June 11–27 is exactly the 72
+ *  group matches; June 28 begins the Round of 32, which is out of scope. */
+const WC_DATE_RANGE = "20260611-20260627";
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
