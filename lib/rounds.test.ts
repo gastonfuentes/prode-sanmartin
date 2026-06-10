@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { selectCurrentRound } from "./rounds";
+import { selectCurrentRound, roundLabelFromApiRound } from "./rounds";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -121,5 +121,29 @@ describe("selectCurrentRound", () => {
     const r2 = makeRound(2, "2026-06-15T19:00:00Z", T); // locked just now
     // Both locked → latest kickoff wins → r2
     expect(selectCurrentRound([r1, r2], NOW)).toEqual(r2);
+  });
+});
+
+// ── roundLabelFromApiRound ──────────────────────────────────────────────────
+
+describe("roundLabelFromApiRound", () => {
+  it("extracts the matchday number and returns 'Fecha N'", () => {
+    expect(roundLabelFromApiRound("Group Stage - 1")).toBe("Fecha 1");
+    expect(roundLabelFromApiRound("Group Stage - 3")).toBe("Fecha 3");
+    expect(roundLabelFromApiRound("Group Stage - 12")).toBe("Fecha 12");
+  });
+
+  it("handles various separator styles (dash with spaces)", () => {
+    expect(roundLabelFromApiRound("Group Stage - 6")).toBe("Fecha 6");
+  });
+
+  it("returns the raw name when no trailing number is found", () => {
+    // For unknown formats, fall back to the original string
+    expect(roundLabelFromApiRound("Quarter Finals")).toBe("Quarter Finals");
+    expect(roundLabelFromApiRound("")).toBe("");
+  });
+
+  it("ignores leading/trailing whitespace around the number", () => {
+    expect(roundLabelFromApiRound("Group Stage -  2 ")).toBe("Fecha 2");
   });
 });

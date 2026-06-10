@@ -15,6 +15,27 @@
 
 import { isRoundLocked } from "./scoring";
 
+// ── roundLabelFromApiRound ──────────────────────────────────────────────────
+
+/**
+ * Derives the Spanish display label "Fecha N" from the api_round string.
+ *
+ * ESPN/API-Football format: "Group Stage - N" (e.g. "Group Stage - 3").
+ * Extracts the trailing integer and returns "Fecha N".
+ * Falls back to the raw string when no trailing number is found (knockout rounds
+ * or unknown formats — out of v1 scope, but handled gracefully).
+ *
+ * Pure function — no DB calls, no side effects. Used at the DISPLAY layer.
+ * Do NOT change api_round values in the DB; derive the label here.
+ */
+export function roundLabelFromApiRound(apiRound: string): string {
+  const match = apiRound.match(/-\s*(\d+)\s*$/);
+  if (match) {
+    return `Fecha ${match[1]}`;
+  }
+  return apiRound;
+}
+
 // ── RoundSummary ────────────────────────────────────────────────────────────
 
 /**
