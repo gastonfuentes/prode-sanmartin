@@ -19,8 +19,7 @@
  */
 
 import { useState, useTransition } from "react";
-import { buildFormState } from "@/lib/predictions-form";
-import { validateScoreInput } from "@/lib/predictions-form";
+import { buildFormState, buildSubmitPayload } from "@/lib/predictions-form";
 import type { SubmitPredictionsResult } from "@/app/(app)/rounds/[id]/actions";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -83,30 +82,48 @@ export function PredictionForm({
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    // Client-side validation before the network round-trip
-    for (const fixture of fixtures) {
-      const entry = formState[fixture.id];
-      const homeV = validateScoreInput(entry?.home ?? "");
-      const awayV = validateScoreInput(entry?.away ?? "");
-      if (!homeV.valid) {
-        setSubmitError(
-          `${fixture.home_team} score: ${homeV.error}`
-        );
-        return;
-      }
-      if (!awayV.valid) {
-        setSubmitError(
-          `${fixture.away_team} score: ${awayV.error}`
-        );
-        return;
-      }
-    }
+    // Build a per-fixture lookup so we can include team names in error messages
+    const fixtureById = new Map(fixtures.map((f) => [f.id, f]));
 
     const entries = fixtures.map((f) => ({
       fixtureId: f.id,
       home: formState[f.id]?.home ?? "",
       away: formState[f.id]?.away ?? "",
     }));
+
+    // Client-side classification — partial saves are allowed (REQ-2.1).
+    // Empty fixtures are skipped; half-filled ones block the submit.
+    const payload = buildSubmitPayload(entries);
+
+    if (!payload.ok) {
+      switch (payload.kind) {
+        case "nothingToSubmit":
+          setSubmitError("Enter at least one prediction before saving.");
+          return;
+
+        case "incomplete": {
+          const names = payload.fixtureIds
+            .map((id) => {
+              const f = fixtureById.get(id);
+              return f ? `${f.home_team} vs ${f.away_team}` : `fixture ${id}`;
+            })
+            .join(", ");
+          setSubmitError(
+            `Complete both scores or leave both empty: ${names}`
+          );
+          return;
+        }
+
+        case "invalid": {
+          const f = fixtureById.get(payload.fixtureId);
+          const label = f
+            ? `${f.home_team} vs ${f.away_team}`
+            : `fixture ${payload.fixtureId}`;
+          setSubmitError(`${label}: ${payload.error}`);
+          return;
+        }
+      }
+    }
 
     startTransition(async () => {
       const result = await submitAction(roundId, entries);

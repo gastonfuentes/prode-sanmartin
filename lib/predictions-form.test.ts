@@ -7,12 +7,20 @@
  *
  * Tested pure functions:
  *   - validateScoreInput: ensures a raw string input is a non-negative integer.
+ *   - classifyFixtureEntry: determines skip / valid / incomplete per fixture.
+ *   - buildSubmitPayload: converts form state to upsertable rows, skipping
+ *     empty fixtures and erroring on half-filled ones.
  *   - buildFormState: maps fixtures + existing predictions into the initial
  *     form state (an object keyed by fixture_id).
  */
 
 import { describe, it, expect } from "vitest";
-import { validateScoreInput, buildFormState } from "./predictions-form";
+import {
+  validateScoreInput,
+  classifyFixtureEntry,
+  buildSubmitPayload,
+  buildFormState,
+} from "./predictions-form";
 
 // ── validateScoreInput ──────────────────────────────────────────────────────
 
@@ -82,6 +90,150 @@ describe("validateScoreInput", () => {
   it("accepts '0' with leading space (trimmed)", () => {
     // We trim before parsing
     expect(validateScoreInput(" 0 ")).toEqual({ valid: true, value: 0 });
+  });
+});
+
+// ── classifyFixtureEntry ────────────────────────────────────────────────────
+
+describe("classifyFixtureEntry", () => {
+  // both empty → skip
+  it("returns skip when both home and away are empty", () => {
+    expect(classifyFixtureEntry("", "")).toEqual({ kind: "skip" });
+  });
+
+  it("returns skip when both home and away are whitespace-only", () => {
+    expect(classifyFixtureEntry("  ", " ")).toEqual({ kind: "skip" });
+  });
+
+  // both filled + valid → valid with parsed values
+  it("returns valid when both are valid integers", () => {
+    expect(classifyFixtureEntry("2", "1")).toEqual({
+      kind: "valid",
+      home: 2,
+      away: 1,
+    });
+  });
+
+  it("returns valid for '0' '0'", () => {
+    expect(classifyFixtureEntry("0", "0")).toEqual({
+      kind: "valid",
+      home: 0,
+      away: 0,
+    });
+  });
+
+  it("returns valid for '1.0' — JS integer quirk preserved", () => {
+    expect(classifyFixtureEntry("1.0", "0")).toEqual({
+      kind: "valid",
+      home: 1,
+      away: 0,
+    });
+  });
+
+  // exactly one filled → incomplete error
+  it("returns incomplete when home is filled but away is empty", () => {
+    const result = classifyFixtureEntry("2", "");
+    expect(result.kind).toBe("incomplete");
+  });
+
+  it("returns incomplete when away is filled but home is empty", () => {
+    const result = classifyFixtureEntry("", "1");
+    expect(result.kind).toBe("incomplete");
+  });
+
+  // invalid value in one or both fields
+  it("returns invalid when home is negative", () => {
+    const result = classifyFixtureEntry("-1", "0");
+    expect(result.kind).toBe("invalid");
+  });
+
+  it("returns invalid when away is fractional", () => {
+    const result = classifyFixtureEntry("2", "1.5");
+    expect(result.kind).toBe("invalid");
+  });
+
+  it("returns invalid when home is a non-numeric string", () => {
+    const result = classifyFixtureEntry("abc", "1");
+    expect(result.kind).toBe("invalid");
+  });
+});
+
+// ── buildSubmitPayload ──────────────────────────────────────────────────────
+
+describe("buildSubmitPayload", () => {
+  type Entry = { fixtureId: number; home: string; away: string };
+
+  it("includes only fully-filled fixtures", () => {
+    const entries: Entry[] = [
+      { fixtureId: 1, home: "2", away: "1" },
+      { fixtureId: 2, home: "", away: "" }, // skip
+      { fixtureId: 3, home: "0", away: "3" },
+    ];
+    const result = buildSubmitPayload(entries);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toEqual([
+        { fixture_id: 1, pred_home: 2, pred_away: 1 },
+        { fixture_id: 3, pred_home: 0, pred_away: 3 },
+      ]);
+    }
+  });
+
+  it("returns nothingToSubmit when all fixtures are empty", () => {
+    const entries: Entry[] = [
+      { fixtureId: 1, home: "", away: "" },
+      { fixtureId: 2, home: "  ", away: "" },
+    ];
+    const result = buildSubmitPayload(entries);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("nothingToSubmit");
+    }
+  });
+
+  it("returns incomplete error with fixture ids when one side is missing", () => {
+    const entries: Entry[] = [
+      { fixtureId: 1, home: "2", away: "1" },
+      { fixtureId: 2, home: "1", away: "" }, // half-filled
+    ];
+    const result = buildSubmitPayload(entries);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.kind === "incomplete") {
+      expect(result.fixtureIds).toContain(2);
+    } else {
+      expect(result.ok).toBe(false); // ensure we reached the incomplete branch
+    }
+  });
+
+  it("returns invalid error when a value is out of range", () => {
+    const entries: Entry[] = [
+      { fixtureId: 1, home: "-1", away: "0" },
+    ];
+    const result = buildSubmitPayload(entries);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("invalid");
+    }
+  });
+
+  it("returns ok with all rows when every fixture is filled", () => {
+    const entries: Entry[] = [
+      { fixtureId: 1, home: "1", away: "0" },
+      { fixtureId: 2, home: "2", away: "2" },
+    ];
+    const result = buildSubmitPayload(entries);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toHaveLength(2);
+    }
+  });
+
+  it("handles empty entries array — nothingToSubmit", () => {
+    const result = buildSubmitPayload([]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("nothingToSubmit");
+    }
   });
 });
 

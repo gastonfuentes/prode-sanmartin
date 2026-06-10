@@ -3,7 +3,9 @@
  *
  * No React, no Supabase — fully testable with Vitest.
  *
- * REQ-2.4: goal values must be non-negative integers (0..99).
+ * REQ-2.1 / REQ-2.4: a user MAY submit predictions for ANY fixture in an open
+ * round. Partial submission (some fixtures left blank) is explicitly allowed.
+ * Goal values must be non-negative integers (0..99).
  */
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -17,6 +19,38 @@ export type FixtureFormEntry = { home: string; away: string };
 
 /** Form state keyed by fixture id. */
 export type PredictionFormState = Record<number, FixtureFormEntry>;
+
+/**
+ * Classification of a single fixture entry when building the submit payload.
+ *
+ * - skip      — both inputs are empty; user has not predicted this fixture yet
+ *               (or deliberately cleared it). No row is submitted; no error.
+ * - valid     — both inputs are valid non-negative integers. Include in upsert.
+ * - incomplete — exactly ONE of home/away is filled. Validation error.
+ * - invalid   — one or both values are present but fail range/type checks.
+ */
+export type FixtureEntryClassification =
+  | { kind: "skip" }
+  | { kind: "valid"; home: number; away: number }
+  | { kind: "incomplete"; homeError: string | null; awayError: string | null }
+  | { kind: "invalid"; homeError: string | null; awayError: string | null };
+
+/** Input shape passed from the form to buildSubmitPayload / server action. */
+export type FormEntry = { fixtureId: number; home: string; away: string };
+
+/** Successful payload — rows ready for upsert. */
+export type SubmitPayloadOk = {
+  ok: true;
+  rows: Array<{ fixture_id: number; pred_home: number; pred_away: number }>;
+};
+
+/** Error payloads returned when submission cannot proceed. */
+export type SubmitPayloadError =
+  | { ok: false; kind: "nothingToSubmit" }
+  | { ok: false; kind: "incomplete"; fixtureIds: number[] }
+  | { ok: false; kind: "invalid"; fixtureId: number; error: string };
+
+export type SubmitPayload = SubmitPayloadOk | SubmitPayloadError;
 
 // ── validateScoreInput ───────────────────────────────────────────────────────
 
@@ -56,6 +90,126 @@ export function validateScoreInput(raw: string): ScoreValidation {
   }
 
   return { valid: true, value: parsed };
+}
+
+// ── classifyFixtureEntry ─────────────────────────────────────────────────────
+
+/**
+ * Classifies a single fixture entry from the form.
+ *
+ * Rules (REQ-2.1, REQ-2.4):
+ *   - Both empty (or whitespace) → skip. Partial predictions are allowed;
+ *     empty means "not yet predicted" for this MVP.
+ *   - Both present and valid → valid with parsed integers.
+ *   - Exactly one present → incomplete (user started but didn't finish).
+ *   - Present but failing range/type checks → invalid.
+ *
+ * NOTE — cleared-to-empty MVP decision:
+ *   If a user had an existing prediction and clears BOTH fields, the entry
+ *   is classified as "skip" and the existing DB record is NOT deleted.
+ *   Deletion is out of spec for the MVP. This is intentional.
+ */
+export function classifyFixtureEntry(
+  rawHome: string,
+  rawAway: string
+): FixtureEntryClassification {
+  const homeEmpty = rawHome.trim() === "";
+  const awayEmpty = rawAway.trim() === "";
+
+  // Both empty → skip without error
+  if (homeEmpty && awayEmpty) {
+    return { kind: "skip" };
+  }
+
+  // Exactly one side is empty → incomplete
+  if (homeEmpty || awayEmpty) {
+    return {
+      kind: "incomplete",
+      homeError: homeEmpty ? "Required" : null,
+      awayError: awayEmpty ? "Required" : null,
+    };
+  }
+
+  // Both present — validate each
+  const homeV = validateScoreInput(rawHome);
+  const awayV = validateScoreInput(rawAway);
+
+  if (!homeV.valid || !awayV.valid) {
+    return {
+      kind: "invalid",
+      homeError: homeV.valid ? null : homeV.error,
+      awayError: awayV.valid ? null : awayV.error,
+    };
+  }
+
+  return { kind: "valid", home: homeV.value, away: awayV.value };
+}
+
+// ── buildSubmitPayload ───────────────────────────────────────────────────────
+
+/**
+ * Converts the raw form entries to a validated upsert payload.
+ *
+ * Processing order (per fixture):
+ *   1. skip     → ignore; do not include in rows.
+ *   2. incomplete → collect fixture id; after scanning all, return an error.
+ *   3. invalid  → return an error immediately (first invalid wins).
+ *   4. valid    → add to rows.
+ *
+ * After scanning all entries:
+ *   - If any incomplete fixtures were found → return incomplete error with ids.
+ *   - If rows is empty (all skipped or empty input) → return nothingToSubmit.
+ *   - Otherwise → return ok with rows.
+ */
+export function buildSubmitPayload(entries: FormEntry[]): SubmitPayload {
+  const rows: Array<{ fixture_id: number; pred_home: number; pred_away: number }> =
+    [];
+  const incompleteIds: number[] = [];
+
+  for (const entry of entries) {
+    const classification = classifyFixtureEntry(entry.home, entry.away);
+
+    switch (classification.kind) {
+      case "skip":
+        // Nothing to do — user left this fixture blank intentionally
+        break;
+
+      case "valid":
+        rows.push({
+          fixture_id: entry.fixtureId,
+          pred_home: classification.home,
+          pred_away: classification.away,
+        });
+        break;
+
+      case "incomplete":
+        incompleteIds.push(entry.fixtureId);
+        break;
+
+      case "invalid": {
+        const errorMsg =
+          classification.homeError ?? classification.awayError ?? "Invalid value";
+        return {
+          ok: false,
+          kind: "invalid",
+          fixtureId: entry.fixtureId,
+          error: errorMsg,
+        };
+      }
+    }
+  }
+
+  // Incomplete entries block the whole submit
+  if (incompleteIds.length > 0) {
+    return { ok: false, kind: "incomplete", fixtureIds: incompleteIds };
+  }
+
+  // All entries were skipped (or input was empty)
+  if (rows.length === 0) {
+    return { ok: false, kind: "nothingToSubmit" };
+  }
+
+  return { ok: true, rows };
 }
 
 // ── buildFormState ───────────────────────────────────────────────────────────

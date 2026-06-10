@@ -6,7 +6,12 @@
  * All actions run server-side; the SSR Supabase client is session-scoped
  * via cookies() — RLS automatically restricts writes to auth.uid().
  *
- * TASK-30 — REQ-2.1–2.4, REQ-3.3: upsert predictions; handle betting lock.
+ * REQ-2.1–2.4, REQ-3.3: partial saves are allowed — empty fixtures are
+ * skipped; only fully-filled, valid fixtures are upserted (REQ-2.1).
+ *
+ * MVP decision — cleared-to-empty: if a user clears both inputs for a
+ * fixture they previously predicted, that entry is treated as "skip" and
+ * the existing DB record is NOT deleted. Deletion is out of spec for MVP.
  *
  * Upsert target: UNIQUE(user_id, fixture_id)
  *   ON CONFLICT (user_id, fixture_id) DO UPDATE SET pred_home, pred_away
@@ -17,7 +22,7 @@
  */
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validateScoreInput } from "@/lib/predictions-form";
+import { buildSubmitPayload } from "@/lib/predictions-form";
 import { revalidatePath } from "next/cache";
 
 export type SubmitPredictionsResult =
@@ -25,46 +30,38 @@ export type SubmitPredictionsResult =
   | { ok: false; error: string };
 
 /**
- * Upserts predictions for all fixtures in a round.
+ * Upserts predictions for the fixtures the user chose to fill in a round.
+ * Empty fixtures are skipped. Half-filled fixtures return a validation error.
  *
  * @param roundId - The round's DB id (used for revalidatePath).
- * @param entries - Array of { fixtureId, home, away } from the form.
+ * @param entries - Array of { fixtureId, home, away } from the form; may
+ *                  include empty strings for fixtures the user left blank.
  */
 export async function submitPredictions(
   roundId: number,
   entries: Array<{ fixtureId: number; home: string; away: string }>
 ): Promise<SubmitPredictionsResult> {
-  // Validate all inputs before touching the DB
-  const rows: Array<{ fixture_id: number; pred_home: number; pred_away: number }> =
-    [];
+  // Server-side validation — mirrors client, never trusts form data
+  const payload = buildSubmitPayload(entries);
 
-  for (const entry of entries) {
-    const homeResult = validateScoreInput(entry.home);
-    const awayResult = validateScoreInput(entry.away);
-
-    if (!homeResult.valid) {
-      return {
-        ok: false,
-        error: `Fixture ${entry.fixtureId} home score: ${homeResult.error}`,
-      };
+  if (!payload.ok) {
+    switch (payload.kind) {
+      case "nothingToSubmit":
+        return { ok: false, error: "Enter at least one prediction before saving." };
+      case "incomplete":
+        return {
+          ok: false,
+          error: `Incomplete prediction for fixture(s): ${payload.fixtureIds.join(", ")}. Fill both scores or leave both empty.`,
+        };
+      case "invalid":
+        return {
+          ok: false,
+          error: `Fixture ${payload.fixtureId}: ${payload.error}`,
+        };
     }
-    if (!awayResult.valid) {
-      return {
-        ok: false,
-        error: `Fixture ${entry.fixtureId} away score: ${awayResult.error}`,
-      };
-    }
-
-    rows.push({
-      fixture_id: entry.fixtureId,
-      pred_home: homeResult.value,
-      pred_away: awayResult.value,
-    });
   }
 
-  if (rows.length === 0) {
-    return { ok: false, error: "No predictions to save." };
-  }
+  const rows = payload.rows;
 
   const supabase = await createServerSupabaseClient();
 
