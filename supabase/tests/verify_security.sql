@@ -204,6 +204,10 @@ end;
 $$;
 
 -- ─── ASSERTION 7: leaderboard — 0-pt players included, tie ranking ───────────
+-- NOTE (mig 018): leaderboard() now returns id (uuid) and avatar_url (text) in
+-- addition to rank, display_name, total_points, exact_count. The assertions
+-- still read the same fields — extra columns are silently ignored in record
+-- iteration and explicit column selects.
 do $$
 declare
   v_past_round_id bigint;
@@ -212,17 +216,19 @@ declare
   v_charlie_pts   bigint;
   v_alice_rank    bigint;
   v_bob_rank      bigint;
+  v_charlie_id    uuid;
 begin
   select id into v_past_round_id from public.rounds where api_round = 'Test - Past';
 
   for v_rec in select * from public.leaderboard(v_past_round_id) order by rank loop
     insert into _verify (assertion, result, detail)
       values ('7. leaderboard row', 'INFO',
-              format('rank=%s name=%s pts=%s exact=%s',
-                     v_rec.rank, v_rec.display_name, v_rec.total_points, v_rec.exact_count));
+              format('rank=%s name=%s pts=%s exact=%s id_present=%s',
+                     v_rec.rank, v_rec.display_name, v_rec.total_points,
+                     v_rec.exact_count, v_rec.id is not null));
   end loop;
 
-  select rank, total_points into v_charlie_rank, v_charlie_pts
+  select rank, total_points, id into v_charlie_rank, v_charlie_pts, v_charlie_id
   from public.leaderboard(v_past_round_id) where display_name = 'Charlie';
   select rank into v_alice_rank from public.leaderboard(v_past_round_id) where display_name = 'Alice';
   select rank into v_bob_rank   from public.leaderboard(v_past_round_id) where display_name = 'Bob';
@@ -243,6 +249,32 @@ begin
     values ('7d. Alice and Bob share rank (tie, REQ-6.4)',
             case when v_alice_rank is not null and v_alice_rank = v_bob_rank then 'PASS' else 'FAIL' end,
             format('alice=%s bob=%s', v_alice_rank, v_bob_rank));
+  -- mig 018: leaderboard() now returns id uuid — verify the column is present
+  insert into _verify (assertion, result, detail)
+    values ('7e. leaderboard returns id column (mig 018)',
+            case when v_charlie_id is not null then 'PASS' else 'FAIL' end,
+            format('charlie id = %s', v_charlie_id));
+end;
+$$;
+
+-- ─── ASSERTION 7f: leaderboard_overall — new cumulative function (mig 018) ───
+do $$
+declare
+  v_row_count int;
+  v_has_id    boolean;
+begin
+  select count(*), bool_and(id is not null)
+    into v_row_count, v_has_id
+  from public.leaderboard_overall();
+
+  insert into _verify (assertion, result, detail)
+    values ('7f. leaderboard_overall returns rows for all players (mig 018)',
+            case when v_row_count >= 3 then 'PASS' else 'FAIL' end,
+            format('%s rows (expected >= 3)', v_row_count));
+  insert into _verify (assertion, result, detail)
+    values ('7g. leaderboard_overall returns id column (mig 018)',
+            case when v_has_id then 'PASS' else 'FAIL' end,
+            'id is not null for all rows');
 end;
 $$;
 
