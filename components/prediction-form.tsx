@@ -20,6 +20,7 @@
 
 import { useState, useTransition } from "react";
 import { buildFormState, buildSubmitPayload } from "@/lib/predictions-form";
+import { getGroupAppearance } from "@/lib/group-colors";
 import type { SubmitPredictionsResult } from "@/app/(app)/rounds/[id]/actions";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -183,18 +184,23 @@ export function PredictionForm({
             timeZone: "America/Argentina/Buenos_Aires",
             timeZoneName: "short",
           });
+          const group = getGroupAppearance(fixture.group_label);
 
           return (
             <div
               key={fixture.id}
-              className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm"
+              className={`rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm ${
+                group ? `border-l-4 ${group.bar}` : ""
+              }`}
             >
               {/* Card header: kickoff time + group badge */}
               <div className="mb-3 flex items-center justify-center gap-2">
                 <p className="text-xs text-gray-400">{kickoffLabel}</p>
-                {fixture.group_label && (
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
-                    {fixture.group_label}
+                {group && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${group.badge}`}
+                  >
+                    {group.label}
                   </span>
                 )}
               </div>
