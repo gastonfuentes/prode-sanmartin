@@ -217,7 +217,7 @@ export function PredictionForm({
             <div
               key={fixture.id}
               className={`rounded-xl border border-gray-200 px-4 py-4 shadow-sm ${
-                isFinished ? "bg-gray-50" : "bg-white"
+                isFinished ? group?.softBg ?? "bg-gray-50" : "bg-white"
               } ${group ? `border-l-4 ${group.bar}` : ""}`}
             >
               {/* Card header: kickoff time + group badge + finished badge */}

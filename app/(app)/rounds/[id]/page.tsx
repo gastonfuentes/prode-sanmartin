@@ -22,6 +22,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isRoundLocked } from "@/lib/scoring";
 import { roundLabelFromApiRound } from "@/lib/rounds";
 import { PredictionForm } from "@/components/prediction-form";
+import { RoundsNav } from "@/components/rounds-nav";
 import { ParticipantsList } from "@/components/participants-list";
 import { StandingsTable } from "@/components/standings-table";
 import { submitPredictions } from "./actions";
@@ -60,9 +61,10 @@ export default async function RoundPage({ params }: RoundPageProps) {
   // do NOT modify api_round in the DB (it is the sync grouping key).
   const roundLabel = roundLabelFromApiRound(round.api_round);
 
-  // Fetch fixtures, profiles, and leaderboard data in parallel
+  // Fetch fixtures, all rounds (for the nav), profiles, and leaderboard data in parallel
   const [
     fixturesResult,
+    roundsResult,
     profilesResult,
     leaderboardRoundResult,
     leaderboardOverallResult,
@@ -74,6 +76,11 @@ export default async function RoundPage({ params }: RoundPageProps) {
       )
       .eq("round_id", roundId)
       .order("kickoff", { ascending: true }),
+
+    supabase
+      .from("rounds")
+      .select("id, api_round, first_kickoff, locks_at")
+      .order("first_kickoff", { ascending: true }),
 
     supabase.rpc("list_participants"),
 
@@ -110,6 +117,12 @@ export default async function RoundPage({ params }: RoundPageProps) {
     predictions = preds ?? [];
   }
 
+  const allRounds = (roundsResult.data ?? []) as Array<{
+    id: number;
+    api_round: string;
+    first_kickoff: string | null;
+    locks_at: string | null;
+  }>;
   const profiles = (profilesResult.data ?? []) as Array<{
     id: string;
     display_name: string | null;
@@ -136,6 +149,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
       {/* ── Round header — col 1 / row 1 on md, so the right panel can start
           aligned with the first fixture card (row 2), not with this header. */}
       <div className="md:col-start-1 md:row-start-1">
+        <RoundsNav rounds={allRounds} activeRoundId={roundId} />
         <h1 className="text-2xl font-bold text-gray-900">{roundLabel}</h1>
         {locked ? (
           <p className="mt-1 text-sm text-amber-700">

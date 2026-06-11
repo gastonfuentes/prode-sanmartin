@@ -25,6 +25,7 @@ describe("getGroupAppearance", () => {
     const b = getGroupAppearance("Group B")!;
     expect(a.badge).not.toBe(b.badge);
     expect(a.bar).not.toBe(b.bar);
+    expect(a.softBg).not.toBe(b.softBg);
   });
 
   it("returns full, non-interpolated Tailwind classes (purge-safe)", () => {
@@ -32,12 +33,15 @@ describe("getGroupAppearance", () => {
     expect(a.badge).toContain("bg-indigo-50");
     expect(a.badge).toContain("text-indigo-700");
     expect(a.bar).toBe("border-l-indigo-500");
+    expect(a.softBg).toBe("bg-indigo-50/60");
   });
 
   it("covers all 12 World Cup groups A–L with a non-fallback palette", () => {
     for (const letter of "ABCDEFGHIJKL") {
       const appearance = getGroupAppearance(`Group ${letter}`)!;
       expect(appearance.bar).not.toBe("border-l-gray-300");
+      // Each group exposes a soft, very-light tinted background (purge-safe)
+      expect(appearance.softBg).toMatch(/^bg-[a-z]+-50\/60$/);
     }
   });
 
