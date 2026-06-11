@@ -5,7 +5,7 @@
  *   1. Round metadata (name, api_round, locks_at)
  *   2. Fixtures for this round (ordered by kickoff)
  *   3. The authenticated user's predictions for those fixtures (RLS-scoped)
- *   4. All profiles (for Participantes panel)
+ *   4. Participants via list_participants() — profiles + active flag (Participantes panel)
  *   5. Leaderboard for this round and overall (for Posiciones panel)
  *
  * Derives the locked state from now() >= round.locks_at (REQ-3.3 — authoritative
@@ -75,10 +75,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
       .eq("round_id", roundId)
       .order("kickoff", { ascending: true }),
 
-    supabase
-      .from("profiles")
-      .select("id, display_name, avatar_url")
-      .order("display_name", { ascending: true }),
+    supabase.rpc("list_participants"),
 
     supabase.rpc("leaderboard", { p_round_id: roundId }),
 
@@ -113,7 +110,12 @@ export default async function RoundPage({ params }: RoundPageProps) {
     predictions = preds ?? [];
   }
 
-  const profiles = profilesResult.data ?? [];
+  const profiles = (profilesResult.data ?? []) as Array<{
+    id: string;
+    display_name: string | null;
+    avatar_url: string | null;
+    active: boolean;
+  }>;
   const leaderboardRound = (leaderboardRoundResult.data ?? []) as Array<{
     id: string;
     rank: number;

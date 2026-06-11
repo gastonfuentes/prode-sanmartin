@@ -1,9 +1,10 @@
 /**
  * ParticipantsList — Server Component.
  *
- * Renders every registered profile with their avatar (Google photo or initials
- * fallback) and display name. Queries public.profiles directly — RLS allows
- * authenticated users to SELECT all rows; emails are NOT shown.
+ * Renders every profile with their avatar (Google photo or initials fallback)
+ * and display name. Profiles come from the list_participants() RPC (migration
+ * 025), which adds an `active` flag — revoked users are tagged "Inactivo" rather
+ * than hidden, so their standings points still count. Emails are NOT shown.
  *
  * Avatars are plain <img> tags (Google-hosted lh3.googleusercontent.com).
  * next/image is intentionally avoided to skip remotePatterns config (same
@@ -14,6 +15,7 @@ interface Profile {
   id: string;
   display_name: string | null;
   avatar_url: string | null;
+  active: boolean;
 }
 
 interface ParticipantsListProps {
@@ -65,6 +67,11 @@ export function ParticipantsList({ profiles }: ParticipantsListProps) {
           <span className="min-w-0 truncate text-sm text-gray-700">
             {profile.display_name ?? "—"}
           </span>
+          {!profile.active && (
+            <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+              Inactivo
+            </span>
+          )}
         </li>
       ))}
     </ul>
