@@ -263,34 +263,3 @@ export function mapToFixtureRows(
 
   return { fixtures, rounds };
 }
-
-// ─── partitionByExistingIds ───────────────────────────────────────────────────
-
-/**
- * Splits result-update rows into the ones whose id already exists in `fixtures`
- * (safe to UPDATE) and the ones that don't (must be ignored — results mode must
- * never INSERT a partial row).
- *
- * CRITICAL: `fixtures.id` is a Postgres `bigint`, and supabase-js/PostgREST
- * serialize bigint as a STRING to avoid JS number precision loss. So the id
- * coming back from `.select("id")` is a string ("736261"), while the id we build
- * from ESPN via parseInt is a number (736261). Comparing them directly with a
- * Set would never match. We normalise BOTH sides to strings before comparing.
- *
- * @param rows           update rows ({ id: number, ... }) built from ESPN
- * @param existingIdRows rows from `select("id").in("id", ...)` — id is a string
- *                       (bigint) or number; both are handled
- */
-export function partitionByExistingIds<T extends { id: number }>(
-  rows: T[],
-  existingIdRows: Array<{ id: number | string }>
-): { known: T[]; skipped: T[] } {
-  const existing = new Set(existingIdRows.map((r) => String(r.id)));
-  const known: T[] = [];
-  const skipped: T[] = [];
-  for (const row of rows) {
-    if (existing.has(String(row.id))) known.push(row);
-    else skipped.push(row);
-  }
-  return { known, skipped };
-}

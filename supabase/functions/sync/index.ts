@@ -37,7 +37,6 @@ import {
   buildTeamGroupMap,
   filterCompleted,
   mapToFixtureRows,
-  partitionByExistingIds,
   type EspnEvent,
   type EspnScoreboardResponse,
   type EspnStandingsResponse,
@@ -274,54 +273,49 @@ async function runResults(
     };
   });
 
-  // Results mode must ONLY update fixtures calendar mode already seeded — it
-  // must NEVER insert (it carries no round_id/kickoff/teams). A plain upsert
-  // does NOT guarantee that: ON CONFLICT DO UPDATE only updates when the id
-  // already exists; any id that does NOT exist takes the INSERT path and fails
-  // the round_id NOT NULL constraint, aborting the whole batch.
+  // Results mode must UPDATE existing fixtures — NEVER upsert. supabase-js
+  // `upsert` emits INSERT ... ON CONFLICT DO UPDATE, whose candidate INSERT row
+  // omits round_id (NOT NULL). Postgres validates NOT NULL on that candidate
+  // tuple BEFORE the ON CONFLICT arbiter can route to DO UPDATE, so a partial-
+  // column upsert throws `null value in column "round_id"` EVEN WHEN the row
+  // already exists. (Confirmed empirically in prod: filtering the ids to only
+  // the existing ones still 500'd.) A targeted UPDATE never forms that candidate
+  // tuple, so round_id is never written and never at risk.
   //
-  // ESPN's 2-day window can surface completed `fifa.world` events outside our
-  // seeded group-stage set (e.g. an inter-confederation playoff). So we first
-  // resolve which ids actually exist, update only those, and ignore the rest.
-  const candidateIds = updates.map((u) => u.id);
-  const { data: existingRows, error: existingError } = await supabase
-    .from("fixtures")
-    .select("id")
-    .in("id", candidateIds);
+  // Per-row UPDATE keyed on the ESPN id. `.neq("status", "FT")` keeps the run
+  // idempotent and the count honest (already-FT rows match zero rows, so they
+  // are not rewritten and not counted), and a completed event whose id was never
+  // seeded (e.g. an ESPN event outside our group stage) simply matches nothing —
+  // no error, no insert. Per-row errors are collected so one bad row cannot
+  // strand the rest; we throw once at the end if any failed.
+  let updated = 0;
+  const failures: string[] = [];
 
-  if (existingError) throw new Error(`fixtures lookup: ${existingError.message}`);
+  for (const u of updates) {
+    const { data, error } = await supabase
+      .from("fixtures")
+      .update({
+        goals_home: u.goals_home,
+        goals_away: u.goals_away,
+        status: u.status,
+      })
+      .eq("id", u.id)
+      .neq("status", "FT")
+      .select("id");
 
-  // partitionByExistingIds normalises bigint-vs-number id comparison (fixtures.id
-  // is bigint → PostgREST returns it as a string; ESPN ids are parsed to numbers).
-  const { known, skipped } = partitionByExistingIds(updates, existingRows ?? []);
-
-  if (skipped.length > 0) {
-    console.warn(
-      `[sync] results: ignoring ${skipped.length} completed event(s) not in fixtures: ${skipped
-        .map((s) => s.id)
-        .join(", ")}`
-    );
+    if (error) {
+      failures.push(`${u.id}: ${error.message}`);
+      continue;
+    }
+    updated += data?.length ?? 0;
   }
 
-  if (known.length === 0) {
-    return new Response(
-      JSON.stringify({ ok: true, mode: "results", updated: 0 }),
-      { headers: { "Content-Type": "application/json" } }
-    );
+  if (failures.length > 0) {
+    throw new Error(`results update: ${failures.join("; ")}`);
   }
-
-  // Every row in `known` is guaranteed to conflict on id, so ON CONFLICT DO
-  // UPDATE always takes the update path here — no insert, no NOT NULL violation.
-  // Idempotent: re-running writes the same goals/status; the score_fixture
-  // trigger only fires on the FT transition, so points are never double-counted.
-  const { error: updateError } = await supabase
-    .from("fixtures")
-    .upsert(known, { onConflict: "id", ignoreDuplicates: false });
-
-  if (updateError) throw new Error(`results upsert: ${updateError.message}`);
 
   return new Response(
-    JSON.stringify({ ok: true, mode: "results", updated: known.length }),
+    JSON.stringify({ ok: true, mode: "results", updated }),
     { headers: { "Content-Type": "application/json" } }
   );
 }
