@@ -28,6 +28,15 @@ export default async function AppLayout({
     redirect("/login");
   }
 
+  // Ongoing access gate (soft baja): a user removed from the whitelist is
+  // ejected here on their next request, even with a still-valid session. The
+  // signup trigger only fires once, so this per-request check is what actually
+  // revokes access. is_allowed() returns true for admins (never self-lock-out).
+  const { data: allowed } = await supabase.rpc("is_allowed");
+  if (!allowed) {
+    redirect("/login?error=access_revoked");
+  }
+
   const isAdmin = await isCurrentUserAdmin(supabase);
 
   return (

@@ -23,6 +23,7 @@ interface LoginPageProps {
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const { error } = await searchParams;
   const isAccessDenied = error === "access_denied";
+  const isAccessRevoked = error === "access_revoked";
 
   return (
     <main className="flex min-h-screen flex-col md:flex-row">
@@ -54,6 +55,15 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
             >
               Acceso denegado. Tu cuenta no está autorizada para acceder a esta app. Contactá al organizador para que te agregue.
+            </div>
+          )}
+
+          {isAccessRevoked && (
+            <div
+              role="alert"
+              className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+            >
+              Tu acceso fue dado de baja. Si creés que es un error, contactá al organizador.
             </div>
           )}
 

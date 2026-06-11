@@ -46,13 +46,21 @@ export default async function AdminHomePage() {
             Apuestas de todos los participantes en las fechas ya cerradas.
           </p>
         </div>
-        <a
-          href="/admin/export"
-          download
-          className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700"
-        >
-          Descargar CSV (todas las fechas)
-        </a>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/admin/users"
+            className="inline-flex items-center rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+          >
+            Usuarios
+          </Link>
+          <a
+            href="/admin/export"
+            download
+            className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700"
+          >
+            Descargar CSV (todas las fechas)
+          </a>
+        </div>
       </div>
 
       {lockedRounds.length === 0 ? (
