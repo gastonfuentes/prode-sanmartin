@@ -619,3 +619,53 @@ describe("group_label assignment in mapToFixtureRows", () => {
     expect("group_label" in fixtures[0]).toBe(true);
   });
 });
+
+// ─── partitionByExistingIds ──────────────────────────────────────────────────
+
+import { partitionByExistingIds } from "./espn";
+
+describe("partitionByExistingIds", () => {
+  it("matches number ids against STRING ids (bigint from PostgREST)", () => {
+    // The real regression: fixtures.id is bigint, so supabase-js returns it as a
+    // string. Result rows carry a number id. They MUST still match.
+    const rows = [{ id: 736261, status: "FT" }];
+    const existing = [{ id: "736261" }]; // string, as bigint comes back
+
+    const { known, skipped } = partitionByExistingIds(rows, existing);
+
+    expect(known).toEqual(rows);
+    expect(skipped).toEqual([]);
+  });
+
+  it("separates known (existing) from unknown (stray) events", () => {
+    const rows = [
+      { id: 1, status: "FT" },
+      { id: 2, status: "FT" }, // stray — not seeded
+      { id: 3, status: "FT" },
+    ];
+    const existing = [{ id: "1" }, { id: "3" }];
+
+    const { known, skipped } = partitionByExistingIds(rows, existing);
+
+    expect(known.map((r) => r.id)).toEqual([1, 3]);
+    expect(skipped.map((r) => r.id)).toEqual([2]);
+  });
+
+  it("returns everything as skipped when nothing exists", () => {
+    const rows = [{ id: 1 }, { id: 2 }];
+
+    const { known, skipped } = partitionByExistingIds(rows, []);
+
+    expect(known).toEqual([]);
+    expect(skipped).toEqual(rows);
+  });
+
+  it("also matches when existing ids come back as numbers", () => {
+    const rows = [{ id: 10 }];
+    const existing = [{ id: 10 }]; // number form — must still match
+
+    const { known } = partitionByExistingIds(rows, existing);
+
+    expect(known).toEqual(rows);
+  });
+});

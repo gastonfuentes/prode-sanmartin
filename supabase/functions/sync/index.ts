@@ -37,6 +37,7 @@ import {
   buildTeamGroupMap,
   filterCompleted,
   mapToFixtureRows,
+  partitionByExistingIds,
   type EspnEvent,
   type EspnScoreboardResponse,
   type EspnStandingsResponse,
@@ -290,9 +291,9 @@ async function runResults(
 
   if (existingError) throw new Error(`fixtures lookup: ${existingError.message}`);
 
-  const existingIds = new Set((existingRows ?? []).map((r) => r.id as number));
-  const known = updates.filter((u) => existingIds.has(u.id));
-  const skipped = updates.filter((u) => !existingIds.has(u.id));
+  // partitionByExistingIds normalises bigint-vs-number id comparison (fixtures.id
+  // is bigint → PostgREST returns it as a string; ESPN ids are parsed to numbers).
+  const { known, skipped } = partitionByExistingIds(updates, existingRows ?? []);
 
   if (skipped.length > 0) {
     console.warn(
