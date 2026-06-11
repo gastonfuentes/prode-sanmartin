@@ -273,16 +273,54 @@ async function runResults(
     };
   });
 
-  // Upsert: only updates rows that already exist (from calendar mode).
-  // ignoreDuplicates:false → ON CONFLICT DO UPDATE → idempotent.
+  // Results mode must ONLY update fixtures calendar mode already seeded — it
+  // must NEVER insert (it carries no round_id/kickoff/teams). A plain upsert
+  // does NOT guarantee that: ON CONFLICT DO UPDATE only updates when the id
+  // already exists; any id that does NOT exist takes the INSERT path and fails
+  // the round_id NOT NULL constraint, aborting the whole batch.
+  //
+  // ESPN's 2-day window can surface completed `fifa.world` events outside our
+  // seeded group-stage set (e.g. an inter-confederation playoff). So we first
+  // resolve which ids actually exist, update only those, and ignore the rest.
+  const candidateIds = updates.map((u) => u.id);
+  const { data: existingRows, error: existingError } = await supabase
+    .from("fixtures")
+    .select("id")
+    .in("id", candidateIds);
+
+  if (existingError) throw new Error(`fixtures lookup: ${existingError.message}`);
+
+  const existingIds = new Set((existingRows ?? []).map((r) => r.id as number));
+  const known = updates.filter((u) => existingIds.has(u.id));
+  const skipped = updates.filter((u) => !existingIds.has(u.id));
+
+  if (skipped.length > 0) {
+    console.warn(
+      `[sync] results: ignoring ${skipped.length} completed event(s) not in fixtures: ${skipped
+        .map((s) => s.id)
+        .join(", ")}`
+    );
+  }
+
+  if (known.length === 0) {
+    return new Response(
+      JSON.stringify({ ok: true, mode: "results", updated: 0 }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  // Every row in `known` is guaranteed to conflict on id, so ON CONFLICT DO
+  // UPDATE always takes the update path here — no insert, no NOT NULL violation.
+  // Idempotent: re-running writes the same goals/status; the score_fixture
+  // trigger only fires on the FT transition, so points are never double-counted.
   const { error: updateError } = await supabase
     .from("fixtures")
-    .upsert(updates, { onConflict: "id", ignoreDuplicates: false });
+    .upsert(known, { onConflict: "id", ignoreDuplicates: false });
 
   if (updateError) throw new Error(`results upsert: ${updateError.message}`);
 
   return new Response(
-    JSON.stringify({ ok: true, mode: "results", updated: updates.length }),
+    JSON.stringify({ ok: true, mode: "results", updated: known.length }),
     { headers: { "Content-Type": "application/json" } }
   );
 }
