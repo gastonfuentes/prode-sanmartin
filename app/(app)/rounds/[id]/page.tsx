@@ -192,17 +192,9 @@ export default async function RoundPage({ params }: RoundPageProps) {
         )}
       </div>
 
-      {/* ── RIGHT PANEL: Participantes + Posiciones — col 2 / row 2, so it
+      {/* ── RIGHT PANEL: Posiciones + Participantes — col 2 / row 2, so it
           lines up with the top of the first fixture card. ──────────────── */}
       <aside className="space-y-6 md:col-start-2 md:row-start-2">
-        {/* Participantes */}
-        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold text-gray-900">
-            Participantes
-          </h2>
-          <ParticipantsList profiles={profiles} />
-        </div>
-
         {/* Posiciones */}
         <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
           <h2 className="mb-4 text-sm font-semibold text-gray-900">
@@ -218,6 +210,14 @@ export default async function RoundPage({ params }: RoundPageProps) {
               rows={leaderboardOverall}
             />
           </div>
+        </div>
+
+        {/* Participantes */}
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
+          <h2 className="mb-3 text-sm font-semibold text-gray-900">
+            Participantes
+          </h2>
+          <ParticipantsList profiles={profiles} />
         </div>
       </aside>
     </div>
