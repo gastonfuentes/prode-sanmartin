@@ -88,12 +88,17 @@ export async function triggerResultsSync(): Promise<SyncActionResult> {
   }
 
   if (!response.ok) {
+    // Admin-only surface: include the real status + body so the admin can see
+    // why it failed (e.g. 401 token mismatch, or a 500 from the scoring trigger
+    // whose body is "Internal error: <message>"). Not a secret leak — the page
+    // is admin-gated.
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
     console.error(
-      `[admin/sync] edge function returned ${response.status} ${response.statusText}`
+      `[admin/sync] edge function returned ${response.status} ${response.statusText}: ${detail}`
     );
     return {
       ok: false,
-      error: "La actualización falló. Probá de nuevo en un momento.",
+      error: `La actualización falló (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
     };
   }
 
