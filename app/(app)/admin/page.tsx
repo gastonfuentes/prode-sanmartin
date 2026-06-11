@@ -12,6 +12,7 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { roundLabelFromApiRound } from "@/lib/rounds";
+import { SyncResultsButton } from "@/components/admin/sync-results-button";
 
 const LOCK_DATE_FMT: Intl.DateTimeFormatOptions = {
   weekday: "short",
@@ -47,6 +48,7 @@ export default async function AdminHomePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <SyncResultsButton />
           <Link
             href="/admin/users"
             className="inline-flex items-center rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
