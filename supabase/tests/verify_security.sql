@@ -138,24 +138,33 @@ do $$
 declare
   v smallint;
 begin
-  v := public.compute_points(2::smallint,1::smallint,2::smallint,1::smallint);
+  -- compute_points is now 5-arg (mig 029): exact_points is supplied per round.
+  -- Fecha-1 scoring (exact_points => 2):
+  v := public.compute_points(2::smallint,1::smallint,2::smallint,1::smallint, 2::smallint);
   insert into _verify (assertion, result, detail)
-    values ('4a. exact 2-1 vs 2-1 -> 2', case when v=2 then 'PASS' else 'FAIL' end, format('got %s', v));
-  v := public.compute_points(1::smallint,0::smallint,3::smallint,0::smallint);
+    values ('4a. exact 2-1 vs 2-1 (exact=2) -> 2', case when v=2 then 'PASS' else 'FAIL' end, format('got %s', v));
+  v := public.compute_points(1::smallint,0::smallint,3::smallint,0::smallint, 2::smallint);
   insert into _verify (assertion, result, detail)
     values ('4b. outcome only (home win) -> 1', case when v=1 then 'PASS' else 'FAIL' end, format('got %s', v));
-  v := public.compute_points(0::smallint,0::smallint,1::smallint,1::smallint);
+  v := public.compute_points(0::smallint,0::smallint,1::smallint,1::smallint, 2::smallint);
   insert into _verify (assertion, result, detail)
     values ('4c. outcome only (draw) -> 1', case when v=1 then 'PASS' else 'FAIL' end, format('got %s', v));
-  v := public.compute_points(1::smallint,1::smallint,1::smallint,1::smallint);
+  v := public.compute_points(1::smallint,1::smallint,1::smallint,1::smallint, 2::smallint);
   insert into _verify (assertion, result, detail)
-    values ('4d. exact draw 1-1 -> 2', case when v=2 then 'PASS' else 'FAIL' end, format('got %s', v));
-  v := public.compute_points(0::smallint,1::smallint,2::smallint,0::smallint);
+    values ('4d. exact draw 1-1 (exact=2) -> 2', case when v=2 then 'PASS' else 'FAIL' end, format('got %s', v));
+  v := public.compute_points(0::smallint,1::smallint,2::smallint,0::smallint, 2::smallint);
   insert into _verify (assertion, result, detail)
     values ('4e. wrong outcome -> 0', case when v=0 then 'PASS' else 'FAIL' end, format('got %s', v));
-  v := public.compute_points(0::smallint,0::smallint,0::smallint,0::smallint);
+  v := public.compute_points(0::smallint,0::smallint,0::smallint,0::smallint, 2::smallint);
   insert into _verify (assertion, result, detail)
-    values ('4f. exact 0-0 -> 2', case when v=2 then 'PASS' else 'FAIL' end, format('got %s', v));
+    values ('4f. exact 0-0 (exact=2) -> 2', case when v=2 then 'PASS' else 'FAIL' end, format('got %s', v));
+  -- Fecha-2+ scoring (exact_points => 3): exact hit worth 3, outcome-only stays 1.
+  v := public.compute_points(2::smallint,1::smallint,2::smallint,1::smallint, 3::smallint);
+  insert into _verify (assertion, result, detail)
+    values ('4g. exact 2-1 vs 2-1 (exact=3) -> 3', case when v=3 then 'PASS' else 'FAIL' end, format('got %s', v));
+  v := public.compute_points(1::smallint,0::smallint,3::smallint,0::smallint, 3::smallint);
+  insert into _verify (assertion, result, detail)
+    values ('4h. outcome only (exact=3) -> 1', case when v=1 then 'PASS' else 'FAIL' end, format('got %s', v));
 end;
 $$;
 
@@ -172,10 +181,14 @@ begin
   from public.predictions
   where user_id = '00000000-0000-0000-0000-000000000003' and fixture_id = 9000001;
 
+  -- Charlie predicted 2-1, actual 2-1 → exact hit. Worth 2 if 'Test - Past' is
+  -- the earliest round, or 3 if real earlier rounds coexist (mig 029). Either
+  -- way an exact hit is >= 2, which is what this assertion cares about: the
+  -- scoring trigger fires and writes points even after the round locked.
   insert into _verify (assertion, result, detail)
     values ('5. score_fixture sets points after lock',
-            case when v_points = 2 then 'PASS' else 'FAIL' end,
-            format('Charlie points = %s (expected 2)', v_points));
+            case when v_points >= 2 then 'PASS' else 'FAIL' end,
+            format('Charlie points = %s (expected exact hit: 2 or 3)', v_points));
 end;
 $$;
 
@@ -333,6 +346,53 @@ begin
     values ('10b. authenticated CAN still update picks',
             case when v_pred_upd then 'PASS' else 'FAIL' end,
             format('has_column_privilege(pred_home,UPDATE) = %s (expected true)', v_pred_upd));
+end;
+$$;
+
+-- ─── ASSERTION 11: leaderboard(p_round_id) is scoped to its round (mig 028) ──
+-- Regression for the cross-round leak: leaderboard() must sum ONLY the round's
+-- predictions, not every round. Charlie already has predictions in BOTH rounds
+-- (past 9000001 = 2-1, future 9000002 = 2-2 from assertion 3). Until now the
+-- future fixture stayed NS (0 pts), hiding the bug. Bring it to FT 2-2 so the
+-- future round scores too, then assert the per-round leaderboard stays scoped.
+--
+--   After future FT 2-2:  Charlie 2-2 -> 2,  Bob 0-0 -> 1 (outcome),  Alice 2-1 -> 0
+--   Correct leaderboard(past):  Charlie = 2 (only 9000001),  Bob = 0 (no past pred)
+--   Buggy  leaderboard(past):   Charlie = 4 (2+2),           Bob = 1 (leaked future)
+--   leaderboard_overall():      Charlie = 4 (cumulative — unaffected by the fix)
+do $$
+declare
+  v_past_round_id    bigint;
+  v_charlie_past     bigint;
+  v_bob_past         bigint;
+  v_charlie_overall  bigint;
+begin
+  select id into v_past_round_id from public.rounds where api_round = 'Test - Past';
+
+  -- Score the future round so Charlie has non-zero points outside the past round.
+  update public.fixtures
+  set status = 'FT', goals_home = 2, goals_away = 2
+  where id = 9000002;
+
+  select total_points into v_charlie_past
+  from public.leaderboard(v_past_round_id) where display_name = 'Charlie';
+  select total_points into v_bob_past
+  from public.leaderboard(v_past_round_id) where display_name = 'Bob';
+  select total_points into v_charlie_overall
+  from public.leaderboard_overall() where display_name = 'Charlie';
+
+  insert into _verify (assertion, result, detail)
+    values ('11a. leaderboard(past) scoped: Charlie = 2 (not 4)',
+            case when v_charlie_past = 2 then 'PASS' else 'FAIL' end,
+            format('Charlie past-round pts = %s (expected 2; bug leaks future round -> 4)', v_charlie_past));
+  insert into _verify (assertion, result, detail)
+    values ('11b. leaderboard(past) excludes other-round points: Bob = 0',
+            case when v_bob_past = 0 then 'PASS' else 'FAIL' end,
+            format('Bob past-round pts = %s (expected 0; Bob has no past prediction)', v_bob_past));
+  insert into _verify (assertion, result, detail)
+    values ('11c. leaderboard_overall stays cumulative: Charlie = 4',
+            case when v_charlie_overall = 4 then 'PASS' else 'FAIL' end,
+            format('Charlie overall pts = %s (expected 4 = past 2 + future 2)', v_charlie_overall));
 end;
 $$;
 

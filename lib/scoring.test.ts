@@ -87,6 +87,28 @@ describe("computePoints", () => {
     // predicted away=2, actual away=2 home=0 (away win, different home score from 1 pred)
     expect(computePoints(1, 2, 0, 2)).toBe(1);
   });
+
+  // mig 029: from the second fecha onward an exact hit is worth 3 pts.
+  // exactPoints is passed by the caller (default 2). Outcome-only stays 1, wrong stays 0.
+  it("returns the exactPoints value (3) for an exact hit when fecha-2 scoring is passed", () => {
+    expect(computePoints(2, 1, 2, 1, 3)).toBe(3);
+  });
+
+  it("returns 3 for an exact draw with fecha-2 scoring", () => {
+    expect(computePoints(0, 0, 0, 0, 3)).toBe(3);
+  });
+
+  it("still returns 1 for outcome-only even under fecha-2 scoring", () => {
+    expect(computePoints(1, 0, 3, 0, 3)).toBe(1);
+  });
+
+  it("still returns 0 for a wrong outcome under fecha-2 scoring", () => {
+    expect(computePoints(2, 0, 0, 1, 3)).toBe(0);
+  });
+
+  it("defaults exactPoints to 2 when omitted (fecha-1 behaviour preserved)", () => {
+    expect(computePoints(2, 1, 2, 1)).toBe(2);
+  });
 });
 
 // ─── computeLocksAt ─────────────────────────────────────────────────────────

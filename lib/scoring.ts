@@ -3,7 +3,8 @@
  *
  * IMPORTANT — ADR-7 COUPLING:
  *   computePoints() is the TypeScript mirror of the SQL function
- *   public.compute_points() defined in supabase/migrations/008_compute_points.sql.
+ *   public.compute_points() defined in supabase/migrations/008_compute_points.sql,
+ *   last changed in supabase/migrations/029_scoring_v2_from_second_round.sql.
  *   Both implementations use the same sign()-based logic and MUST be kept in sync.
  *   Any change to the scoring rules must be applied to BOTH files.
  */
@@ -33,17 +34,22 @@ export function outcome(home: number, away: number): Outcome {
  * Computes points for a single prediction against the actual result.
  *
  * Rules (REQ-5.2, REQ-5.3, REQ-5.4):
- *   - Exact score (both goals match) → 2 pts
+ *   - Exact score (both goals match) → exactPoints (2 on fecha 1, 3 from fecha 2)
  *   - Correct outcome only            → 1 pt
  *   - Wrong outcome                   → 0 pts
+ *
+ * exactPoints is supplied by the caller because the value depends on the round:
+ * the SQL trigger passes 2 for the earliest round and 3 from the second round
+ * onward (migration 029). Defaults to 2 to preserve the original behaviour.
  */
 export function computePoints(
   predHome: number,
   predAway: number,
   goalsHome: number,
-  goalsAway: number
-): 0 | 1 | 2 {
-  if (predHome === goalsHome && predAway === goalsAway) return 2;
+  goalsAway: number,
+  exactPoints: number = 2
+): number {
+  if (predHome === goalsHome && predAway === goalsAway) return exactPoints;
   if (outcome(predHome, predAway) === outcome(goalsHome, goalsAway)) return 1;
   return 0;
 }
