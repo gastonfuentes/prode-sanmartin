@@ -92,16 +92,16 @@ describe("computePoints", () => {
 // ─── computeLocksAt ─────────────────────────────────────────────────────────
 
 describe("computeLocksAt", () => {
-  it("returns firstKickoff minus 1 hour", () => {
+  it("returns firstKickoff minus 10 minutes", () => {
     const kickoff = new Date("2026-06-15T18:00:00Z");
-    const expected = new Date("2026-06-15T17:00:00Z");
+    const expected = new Date("2026-06-15T17:50:00Z");
     expect(computeLocksAt(kickoff)).toEqual(expected);
   });
 
-  it("result is exactly firstKickoff - 3600000 ms", () => {
+  it("result is exactly firstKickoff - 600000 ms", () => {
     const kickoff = new Date("2026-06-20T21:00:00Z");
     const locksAt = computeLocksAt(kickoff);
-    expect(locksAt.getTime()).toBe(kickoff.getTime() - 3_600_000);
+    expect(locksAt.getTime()).toBe(kickoff.getTime() - 600_000);
   });
 
   it("does not mutate the input Date", () => {
@@ -112,8 +112,8 @@ describe("computeLocksAt", () => {
   });
 
   it("handles a midnight boundary (00:00 UTC)", () => {
-    const kickoff = new Date("2026-06-16T00:30:00Z");
-    const expected = new Date("2026-06-15T23:30:00Z");
+    const kickoff = new Date("2026-06-16T00:05:00Z");
+    const expected = new Date("2026-06-15T23:55:00Z");
     expect(computeLocksAt(kickoff)).toEqual(expected);
   });
 
@@ -121,7 +121,7 @@ describe("computeLocksAt", () => {
     // Using UTC timestamps so DST doesn't apply — computeLocksAt works in ms
     const kickoff = new Date("2026-03-29T15:00:00Z"); // DST change day in Europe
     const locksAt = computeLocksAt(kickoff);
-    expect(locksAt.getTime()).toBe(kickoff.getTime() - 3_600_000);
+    expect(locksAt.getTime()).toBe(kickoff.getTime() - 600_000);
   });
 });
 

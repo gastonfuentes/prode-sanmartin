@@ -51,13 +51,14 @@ export function computePoints(
 // ─── computeLocksAt ─────────────────────────────────────────────────────────
 
 /**
- * Returns the lock time for a round: exactly 1 hour before the first kickoff.
+ * Returns the lock time for a round: exactly 10 minutes before the first kickoff.
  *
  * Works in UTC milliseconds — no timezone assumptions.
- * Mirrors the STORED GENERATED column: `first_kickoff - INTERVAL '1 hour'` (REQ-3.1).
+ * Mirrors the DB trigger set_round_locks_at: `first_kickoff - INTERVAL '10 minutes'`
+ * (migration 027, supersedes the original 1-hour offset).
  */
 export function computeLocksAt(firstKickoff: Date): Date {
-  return new Date(firstKickoff.getTime() - 3_600_000);
+  return new Date(firstKickoff.getTime() - 600_000);
 }
 
 // ─── isRoundLocked ──────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ export function computeLocksAt(firstKickoff: Date): Date {
 /**
  * Returns true when the round is locked (no more predictions allowed).
  *
- * Lock boundary: `now >= locksAt` — T−60 is CLOSED (REQ-3.3, confirmed rule).
+ * Lock boundary: `now >= locksAt` — at locksAt (T−10) it is CLOSED (REQ-3.3).
  * This is the TypeScript mirror of the DB trigger condition:
  *   `if now() >= v_locks_at then raise exception ...`
  */
