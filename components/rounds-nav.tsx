@@ -17,6 +17,7 @@ interface RoundsNavRound {
   id: number;
   api_round: string;
   locks_at: string | null;
+  is_active: boolean;
 }
 
 interface RoundsNavProps {
@@ -37,6 +38,26 @@ export function RoundsNav({ rounds, activeRoundId }: RoundsNavProps) {
     >
       {rounds.map((round) => {
         const isActive = round.id === activeRoundId;
+        const label = roundLabelFromApiRound(round.api_round);
+
+        // Hidden round (is_active === false): only admins ever receive it here,
+        // since RLS filters hidden rounds out for everyone else. Render it as a
+        // disabled, non-clickable pill so it can't be opened from the nav. The
+        // round the user is currently viewing stays a normal pill (below), even
+        // if hidden — they are already on it.
+        if (!round.is_active && !isActive) {
+          return (
+            <span
+              key={round.id}
+              aria-disabled="true"
+              title="Fecha oculta"
+              className="shrink-0 cursor-not-allowed select-none rounded-full border border-dashed border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-400"
+            >
+              {label}
+            </span>
+          );
+        }
+
         return (
           <Link
             key={round.id}
@@ -48,7 +69,7 @@ export function RoundsNav({ rounds, activeRoundId }: RoundsNavProps) {
                 : "border border-gray-300 text-gray-600 hover:bg-gray-50"
             }`}
           >
-            {roundLabelFromApiRound(round.api_round)}
+            {label}
           </Link>
         );
       })}

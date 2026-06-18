@@ -84,7 +84,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
 
     supabase
       .from("rounds")
-      .select("id, api_round, first_kickoff, locks_at")
+      .select("id, api_round, first_kickoff, locks_at, is_active")
       .order("first_kickoff", { ascending: true }),
 
     supabase.rpc("list_participants"),
@@ -132,6 +132,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
     api_round: string;
     first_kickoff: string | null;
     locks_at: string | null;
+    is_active: boolean;
   }>;
   const profiles = (profilesResult.data ?? []) as Array<{
     id: string;
