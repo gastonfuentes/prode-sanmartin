@@ -164,6 +164,7 @@ export function buildPlayerCard(
     roundLabel: roundLabelFromApiRound(first.api_round),
     rows: cardRows,
     totalPoints: rows.reduce((sum, r) => sum + r.points, 0),
-    exactCount: rows.filter((r) => r.points === 2).length,
+    // Exact hits score 2 (fecha 1) or 3 (fecha 2+, mig 029); >= 2 catches both.
+    exactCount: rows.filter((r) => r.points >= 2).length,
   };
 }

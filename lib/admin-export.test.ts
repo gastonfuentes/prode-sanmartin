@@ -175,14 +175,14 @@ describe("buildPlayerCard", () => {
     ]);
   });
 
-  it("sums total points and counts exact hits (points === 2)", () => {
+  it("sums total points and counts exact hits (points >= 2: fecha 1 = 2, fecha 2+ = 3)", () => {
     const card = buildPlayerCard([
-      makeRow({ fixture_id: 1, points: 2 }),
-      makeRow({ fixture_id: 2, points: 1 }),
-      makeRow({ fixture_id: 3, points: 2 }),
-      makeRow({ fixture_id: 4, points: 0 }),
+      makeRow({ fixture_id: 1, points: 2 }), // exact, fecha 1
+      makeRow({ fixture_id: 2, points: 1 }), // outcome only
+      makeRow({ fixture_id: 3, points: 3 }), // exact, fecha 2+
+      makeRow({ fixture_id: 4, points: 0 }), // wrong
     ]);
-    expect(card?.totalPoints).toBe(5);
+    expect(card?.totalPoints).toBe(6);
     expect(card?.exactCount).toBe(2);
   });
 
