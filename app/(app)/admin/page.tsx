@@ -13,6 +13,15 @@ import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { roundLabelFromApiRound } from "@/lib/rounds";
 import { SyncResultsButton } from "@/components/admin/sync-results-button";
+import { RoundActiveToggle } from "@/components/admin/round-active-toggle";
+
+interface AllRoundRow {
+  id: number;
+  api_round: string;
+  first_kickoff: string | null;
+  locks_at: string | null;
+  is_active: boolean;
+}
 
 const LOCK_DATE_FMT: Intl.DateTimeFormatOptions = {
   weekday: "short",
@@ -37,6 +46,14 @@ export default async function AdminHomePage() {
     .order("locks_at", { ascending: false });
 
   const lockedRounds = rounds ?? [];
+
+  // Admins bypass the RLS visibility filter, so this returns hidden rounds too.
+  const { data: allRoundsData } = await supabase
+    .from("rounds")
+    .select("id, api_round, first_kickoff, locks_at, is_active")
+    .order("first_kickoff", { ascending: true });
+
+  const allRounds = (allRoundsData ?? []) as AllRoundRow[];
 
   return (
     <div className="flex flex-col gap-6">
@@ -93,6 +110,44 @@ export default async function AdminHomePage() {
                   →
                 </span>
               </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900">Gestionar fechas</h2>
+        <p className="mt-1 text-sm text-gray-500">
+          Las fechas ocultas no son visibles para los participantes.
+        </p>
+      </div>
+
+      {allRounds.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-12 text-center text-sm text-gray-500">
+          Todavía no hay fechas disponibles.
+        </div>
+      ) : (
+        <ul className="divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          {allRounds.map((round) => (
+            <li
+              key={round.id}
+              className="flex items-center justify-between gap-3 px-4 py-3"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-gray-900">
+                  {roundLabelFromApiRound(round.api_round)}
+                </span>
+                {!round.is_active && (
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+                    Oculta
+                  </span>
+                )}
+              </div>
+              <RoundActiveToggle
+                roundId={round.id}
+                active={round.is_active}
+                label={roundLabelFromApiRound(round.api_round)}
+              />
             </li>
           ))}
         </ul>

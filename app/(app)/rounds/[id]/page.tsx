@@ -17,7 +17,7 @@
  * TASK-30 — REQ-2.1–2.4, REQ-3.3, REQ-6.1–6.8.
  */
 
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isRoundLocked } from "@/lib/scoring";
 import { roundLabelFromApiRound } from "@/lib/rounds";
@@ -49,7 +49,11 @@ export default async function RoundPage({ params }: RoundPageProps) {
     .single();
 
   if (roundError || !round) {
-    notFound();
+    // A non-admin requesting a hidden round gets zero rows under RLS (same shape
+    // as a nonexistent round). Redirect to / — the root page resolves the
+    // current active round and sends them there. Admins bypass RLS and load the
+    // round normally, so they never reach this branch for a hidden round.
+    redirect("/");
   }
 
   // Derive authoritative lock state from server time + locks_at
