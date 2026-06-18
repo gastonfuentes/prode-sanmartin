@@ -23,6 +23,10 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isCurrentUserAdmin } from "@/lib/supabase/admin";
 import { revalidatePath } from "next/cache";
 
+export type RoundActiveActionResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
 export type SyncActionResult =
   | { ok: true; updated: number }
   | { ok: false; error: string };
@@ -121,4 +125,40 @@ export async function triggerResultsSync(): Promise<SyncActionResult> {
   }
 
   return { ok: true, updated };
+}
+
+/**
+ * Toggles the is_active flag on a round. When false, the round is hidden from
+ * non-admin players across the entire app (nav, predictions, leaderboard).
+ * Calls admin_set_round_active (migration 030) which re-checks admin status
+ * and raises P0001 on any authorization or validation failure.
+ */
+export async function setRoundActive(
+  roundId: number,
+  active: boolean
+): Promise<RoundActiveActionResult> {
+  const supabase = await createServerSupabaseClient();
+
+  // Belt-and-suspenders: layout guard already checked, but action is standalone.
+  const isAdmin = await isCurrentUserAdmin(supabase);
+  if (!isAdmin) {
+    return { ok: false, error: "No tenés permisos para realizar esta acción." };
+  }
+
+  const { error } = await supabase.rpc("admin_set_round_active", {
+    p_round_id: roundId,
+    p_active: active,
+  });
+
+  if (error) {
+    if (error.code === "P0001") {
+      return { ok: false, error: "No tenés permisos para realizar esta acción." };
+    }
+    return { ok: false, error: "No se pudo actualizar la fecha. Intentá de nuevo." };
+  }
+
+  // Hiding/showing a round affects the post-login redirect and the nav for
+  // everyone — revalidate the full layout, not just /admin.
+  revalidatePath("/", "layout");
+  return { ok: true };
 }

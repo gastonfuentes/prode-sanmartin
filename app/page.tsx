@@ -30,6 +30,10 @@ export default async function RootPage() {
   const { data: rounds } = await supabase
     .from("rounds")
     .select("id, name, api_round, first_kickoff, locks_at, status")
+    // Only active rounds are redirect targets. A round hidden by the admin must
+    // not be the post-login destination — even for admins, who bypass the RLS
+    // visibility filter and would otherwise still land on the hidden round.
+    .eq("is_active", true)
     .order("first_kickoff", { ascending: true });
 
   const current = rounds ? selectCurrentRound(rounds as RoundSummary[], new Date()) : null;
