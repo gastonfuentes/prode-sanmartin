@@ -68,6 +68,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
     profilesResult,
     leaderboardRoundResult,
     leaderboardOverallResult,
+    roundPredictionsResult,
   ] = await Promise.all([
     supabase
       .from("fixtures")
@@ -87,6 +88,11 @@ export default async function RoundPage({ params }: RoundPageProps) {
     supabase.rpc("leaderboard", { p_round_id: roundId }),
 
     supabase.rpc("leaderboard_overall"),
+
+    // All participants' predictions for this round. The RPC enforces the
+    // post-lock privacy gate (zero rows before locks_at), so this only carries
+    // data once the round is closed.
+    supabase.rpc("round_predictions", { p_round_id: roundId }),
   ]);
 
   const { data: fixtures, error: fixturesError } = fixturesResult;
@@ -144,6 +150,38 @@ export default async function RoundPage({ params }: RoundPageProps) {
     total_points: number;
   }>;
 
+  // Group all participants' predictions by fixture (post-lock only). Sorted by
+  // display_name for a stable view; the share text reuses this order.
+  const roundPredictions = (roundPredictionsResult.data ?? []) as Array<{
+    display_name: string | null;
+    fixture_id: number;
+    pred_home: number;
+    pred_away: number;
+    points: number;
+  }>;
+  const othersByFixture: Record<
+    number,
+    Array<{
+      display_name: string | null;
+      pred_home: number;
+      pred_away: number;
+      points: number;
+    }>
+  > = {};
+  for (const p of roundPredictions) {
+    (othersByFixture[p.fixture_id] ??= []).push({
+      display_name: p.display_name,
+      pred_home: p.pred_home,
+      pred_away: p.pred_away,
+      points: p.points,
+    });
+  }
+  for (const id of Object.keys(othersByFixture)) {
+    othersByFixture[Number(id)].sort((a, b) =>
+      (a.display_name ?? "").localeCompare(b.display_name ?? "", "es")
+    );
+  }
+
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_16rem] md:items-start md:gap-x-8">
       {/* ── Round header — col 1 / row 1 on md, so the right panel can start
@@ -184,8 +222,10 @@ export default async function RoundPage({ params }: RoundPageProps) {
         ) : (
           <PredictionForm
             roundId={roundId}
+            roundLabel={roundLabel}
             fixtures={fixtures}
             predictions={predictions}
+            othersByFixture={othersByFixture}
             isLocked={locked}
             submitAction={submitPredictions}
           />

@@ -21,6 +21,8 @@
 import { useState, useTransition } from "react";
 import { buildFormState, buildSubmitPayload } from "@/lib/predictions-form";
 import { getGroupAppearance } from "@/lib/group-colors";
+import { OthersPredictionsModal } from "@/components/others-predictions-modal";
+import type { SharePick } from "@/lib/share-predictions";
 import type { SubmitPredictionsResult } from "@/app/(app)/rounds/[id]/actions";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -47,8 +49,15 @@ interface ExistingPrediction {
 
 interface PredictionFormProps {
   roundId: number;
+  roundLabel: string;
   fixtures: Fixture[];
   predictions: ExistingPrediction[];
+  /**
+   * All participants' predictions grouped by fixture id. Only populated after
+   * the round locks (round_predictions RPC returns zero rows before lock), so
+   * the "ver pronósticos" entry point appears post-lock only.
+   */
+  othersByFixture: Record<number, SharePick[]>;
   isLocked: boolean;
   submitAction: (
     roundId: number,
@@ -73,14 +82,18 @@ function pointsAppearance(points: number): { label: string; badge: string } {
 
 export function PredictionForm({
   roundId,
+  roundLabel,
   fixtures,
   predictions,
+  othersByFixture,
   isLocked,
   submitAction,
 }: PredictionFormProps) {
   const [formState, setFormState] = useState(() =>
     buildFormState(fixtures, predictions)
   );
+  // Which fixture's "others' predictions" modal is open (null = none).
+  const [activeFixtureId, setActiveFixtureId] = useState<number | null>(null);
   // Saved predictions keyed by fixture — source of truth for finished cards
   // (real prediction + points), independent of the editable formState.
   const predictionByFixture = new Map(
@@ -212,6 +225,7 @@ export function PredictionForm({
             fixture.goals_home !== null &&
             fixture.goals_away !== null;
           const userPrediction = predictionByFixture.get(fixture.id);
+          const othersPicks = othersByFixture[fixture.id] ?? [];
 
           return (
             <div
@@ -336,6 +350,29 @@ export function PredictionForm({
                     </span>
                   )}
                 </div>
+              )}
+
+              {/* Others' predictions — post-lock only (othersByFixture is empty
+                  before lock). type="button" so it never submits the form. */}
+              {othersPicks.length > 0 && (
+                <div className="mt-3 flex justify-center border-t border-gray-200 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setActiveFixtureId(fixture.id)}
+                    className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+                  >
+                    Ver pronósticos ({othersPicks.length})
+                  </button>
+                </div>
+              )}
+
+              {activeFixtureId === fixture.id && (
+                <OthersPredictionsModal
+                  fixture={fixture}
+                  picks={othersPicks}
+                  roundLabel={roundLabel}
+                  onClose={() => setActiveFixtureId(null)}
+                />
               )}
             </div>
           );
