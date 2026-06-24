@@ -35,7 +35,7 @@ interface OthersPredictionsModalProps {
 /** Tailwind classes for the points badge — mirrors the prediction form. */
 function pointsBadge(points: number): { label: string; badge: string } {
   if (points >= 2) {
-    return { label: "+2", badge: "bg-green-100 text-green-700" };
+    return { label: `+${points}`, badge: "bg-green-100 text-green-700" };
   }
   if (points === 1) {
     return { label: "+1", badge: "bg-amber-100 text-amber-700" };
