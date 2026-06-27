@@ -79,6 +79,12 @@ export default async function AdminHomePage() {
           >
             Usuarios
           </Link>
+          <Link
+            href="/admin/groups"
+            className="inline-flex items-center rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+          >
+            Grupos
+          </Link>
           <a
             href="/admin/export"
             download
