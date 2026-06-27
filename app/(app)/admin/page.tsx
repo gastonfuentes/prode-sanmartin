@@ -13,7 +13,13 @@ import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { roundLabelFromApiRound } from "@/lib/rounds";
 import { SyncResultsButton } from "@/components/admin/sync-results-button";
+import { SyncCalendarButton } from "@/components/admin/sync-calendar-button";
 import { RoundActiveToggle } from "@/components/admin/round-active-toggle";
+
+// The calendar sync (triggered by SyncCalendarButton → triggerCalendarSync) chains
+// several ESPN fetches and can exceed the default serverless limit; give the route
+// room so the server action can await the Edge Function response.
+export const maxDuration = 60;
 
 interface AllRoundRow {
   id: number;
@@ -65,6 +71,7 @@ export default async function AdminHomePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <SyncCalendarButton />
           <SyncResultsButton />
           <Link
             href="/admin/users"

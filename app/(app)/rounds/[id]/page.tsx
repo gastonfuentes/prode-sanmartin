@@ -44,7 +44,7 @@ export default async function RoundPage({ params }: RoundPageProps) {
   // Fetch round metadata
   const { data: round, error: roundError } = await supabase
     .from("rounds")
-    .select("id, name, api_round, locks_at, first_kickoff, status")
+    .select("id, name, api_round, locks_at, first_kickoff, status, stage")
     .eq("id", roundId)
     .single();
 
@@ -56,10 +56,14 @@ export default async function RoundPage({ params }: RoundPageProps) {
     redirect("/");
   }
 
-  // Derive authoritative lock state from server time + locks_at
-  const locked =
-    round.locks_at !== null &&
-    isRoundLocked(new Date(), new Date(round.locks_at));
+  const now = new Date();
+  const isKnockout = round.stage === "knockout";
+
+  // Group rounds use a single round-level lock. Knockout rounds lock PER MATCH
+  // (see per-fixture decided/locked below), so the round-level banner is hidden
+  // for them and openness is decided card by card.
+  const roundLocked =
+    round.locks_at !== null && isRoundLocked(now, new Date(round.locks_at));
 
   // Spanish round label derived from api_round at the display layer only —
   // do NOT modify api_round in the DB (it is the sync grouping key).
@@ -72,12 +76,13 @@ export default async function RoundPage({ params }: RoundPageProps) {
     profilesResult,
     leaderboardRoundResult,
     leaderboardOverallResult,
+    leaderboardKnockoutResult,
     roundPredictionsResult,
   ] = await Promise.all([
     supabase
       .from("fixtures")
       .select(
-        "id, home_team, away_team, home_logo, away_logo, group_label, kickoff, goals_home, goals_away, status"
+        "id, home_team, away_team, home_logo, away_logo, group_label, kickoff, goals_home, goals_away, status, teams_decided, locks_at"
       )
       .eq("round_id", roundId)
       .order("kickoff", { ascending: true }),
@@ -93,9 +98,12 @@ export default async function RoundPage({ params }: RoundPageProps) {
 
     supabase.rpc("leaderboard_overall"),
 
+    // Knockout-only standings (grand total stays in leaderboard_overall).
+    supabase.rpc("leaderboard_knockout"),
+
     // All participants' predictions for this round. The RPC enforces the
-    // post-lock privacy gate (zero rows before locks_at), so this only carries
-    // data once the round is closed.
+    // post-lock privacy gate PER FIXTURE (zero rows for a match before its lock),
+    // so still-open knockout matches never leak.
     supabase.rpc("round_predictions", { p_round_id: roundId }),
   ]);
 
@@ -154,6 +162,24 @@ export default async function RoundPage({ params }: RoundPageProps) {
     avatar_url: string | null;
     total_points: number;
   }>;
+  const leaderboardKnockout = (leaderboardKnockoutResult.data ?? []) as Array<{
+    id: string;
+    rank: number;
+    display_name: string | null;
+    avatar_url: string | null;
+    total_points: number;
+  }>;
+
+  // Per-fixture lock + decided state. Group fixtures: decided always true, locked
+  // = round-level lock. Knockout fixtures: decided = teams_decided, locked = the
+  // per-match lock (fixtures.locks_at). The DB enforces both regardless; this is UX.
+  const enrichedFixtures = fixtures.map((f) => {
+    const decided = isKnockout ? f.teams_decided === true : true;
+    const locked = isKnockout
+      ? f.locks_at !== null && isRoundLocked(now, new Date(f.locks_at))
+      : roundLocked;
+    return { ...f, decided, locked };
+  });
 
   // Group all participants' predictions by fixture (post-lock only). Sorted by
   // display_name for a stable view; the share text reuses this order.
@@ -194,7 +220,11 @@ export default async function RoundPage({ params }: RoundPageProps) {
       <div className="md:col-start-1 md:row-start-1">
         <RoundsNav rounds={allRounds} activeRoundId={roundId} />
         <h1 className="text-2xl font-bold text-gray-900">{roundLabel}</h1>
-        {locked ? (
+        {isKnockout ? (
+          <p className="mt-1 text-sm text-gray-500">
+            Eliminatorias · cada partido cierra 10 minutos antes de empezar.
+          </p>
+        ) : roundLocked ? (
           <p className="mt-1 text-sm text-amber-700">
             Esta fecha está cerrada. Ya no se aceptan pronósticos.
           </p>
@@ -228,10 +258,10 @@ export default async function RoundPage({ params }: RoundPageProps) {
           <PredictionForm
             roundId={roundId}
             roundLabel={roundLabel}
-            fixtures={fixtures}
+            fixtures={enrichedFixtures}
             predictions={predictions}
             othersByFixture={othersByFixture}
-            isLocked={locked}
+            isLocked={isKnockout ? false : roundLocked}
             submitAction={submitPredictions}
           />
         )}
@@ -249,6 +279,10 @@ export default async function RoundPage({ params }: RoundPageProps) {
             <StandingsTable
               title="Fecha actual"
               rows={leaderboardRound}
+            />
+            <StandingsTable
+              title="Eliminatorias"
+              rows={leaderboardKnockout}
             />
             <StandingsTable
               title="General"

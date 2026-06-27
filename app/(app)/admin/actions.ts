@@ -31,6 +31,10 @@ export type SyncActionResult =
   | { ok: true; updated: number }
   | { ok: false; error: string };
 
+export type CalendarSyncActionResult =
+  | { ok: true; decided: number; total: number }
+  | { ok: false; error: string };
+
 /**
  * Invokes the sync Edge Function in results mode and returns how many fixtures
  * were written to FT on this run (0 when nothing finished yet or the function's
@@ -125,6 +129,107 @@ export async function triggerResultsSync(): Promise<SyncActionResult> {
   }
 
   return { ok: true, updated };
+}
+
+/**
+ * Invokes the sync Edge Function in CALENDAR mode — re-pulls the full schedule so
+ * newly-resolved knockout crosses pick up their real teams (and become bettable).
+ * Lets the admin habilitate knockout matches on demand instead of waiting for the
+ * daily 06:00 UTC cron. Returns the knockout decided/total fixture split after the
+ * sync so the button can report how many matches are now habilitated.
+ *
+ * Same two-layer auth and env contract as triggerResultsSync. The calendar sync
+ * chains several ESPN fetches, so the hosting route raises maxDuration
+ * (see app/(app)/admin/page.tsx).
+ */
+export async function triggerCalendarSync(): Promise<CalendarSyncActionResult> {
+  const supabase = await createServerSupabaseClient();
+
+  // Belt-and-suspenders admin check (the action is independently callable).
+  const isAdmin = await isCurrentUserAdmin(supabase);
+  if (!isAdmin) {
+    return { ok: false, error: "No tenés permisos para realizar esta acción." };
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const cronToken = process.env.CRON_TOKEN;
+
+  if (!supabaseUrl || !anonKey || !cronToken) {
+    console.error(
+      "[admin/sync] missing env: " +
+        [
+          !supabaseUrl && "NEXT_PUBLIC_SUPABASE_URL",
+          !anonKey && "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+          !cronToken && "CRON_TOKEN",
+        ]
+          .filter(Boolean)
+          .join(", ")
+    );
+    return {
+      ok: false,
+      error: "La actualización no está configurada. Avisá al administrador.",
+    };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${supabaseUrl}/functions/v1/sync?mode=calendar`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Layer 1: anon-key JWT passes the Supabase gateway (verify_jwt).
+        Authorization: `Bearer ${anonKey}`,
+        // Layer 2: app-level shared secret the Edge Function compares.
+        "x-cron-secret": cronToken,
+      },
+      body: "{}",
+      cache: "no-store",
+    });
+  } catch (err) {
+    console.error("[admin/sync] calendar fetch failed:", err);
+    return {
+      ok: false,
+      error: "No se pudo contactar el servicio de actualización. Probá de nuevo.",
+    };
+  }
+
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
+    console.error(
+      `[admin/sync] calendar edge function returned ${response.status} ${response.statusText}: ${detail}`
+    );
+    return {
+      ok: false,
+      error: `La actualización falló (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+    };
+  }
+
+  // The calendar sync re-pulls the whole bracket; the meaningful signal for the
+  // admin is how many knockout matches now have real teams (i.e. are bettable).
+  // Read that split from the DB after the upserts have landed (the Edge Function
+  // only responds once runCalendar finishes, so this sees the fresh state).
+  let decided = 0;
+  let total = 0;
+  const { data: koRounds } = await supabase
+    .from("rounds")
+    .select("id")
+    .eq("stage", "knockout");
+  const koRoundIds = (koRounds ?? []).map((r) => r.id as number);
+
+  if (koRoundIds.length > 0) {
+    const { data: koFixtures } = await supabase
+      .from("fixtures")
+      .select("teams_decided")
+      .in("round_id", koRoundIds);
+    total = koFixtures?.length ?? 0;
+    decided = (koFixtures ?? []).filter((f) => f.teams_decided === true).length;
+  }
+
+  // New fixtures/teams change the nav, the round pages and the post-login redirect.
+  revalidatePath("/", "layout");
+
+  return { ok: true, decided, total };
 }
 
 /**

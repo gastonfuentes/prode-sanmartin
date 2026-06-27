@@ -38,6 +38,17 @@ export interface EspnEvent {
   date: string; // ISO kickoff, e.g. "2026-06-11T19:00Z"
   name: string;
   uid: string;
+  /**
+   * Per-event season info. `slug` is the RELIABLE knockout-round identifier
+   * ("round-of-32" | "round-of-16" | "quarterfinals" | "semifinals" |
+   * "3rd-place-match" | "final"). Group-stage events do not carry a knockout
+   * slug. NOTE: leagues[0].season.type.name always reports "Group Stage" even on
+   * knockout dates — do NOT use it; the per-event slug is the source of truth.
+   */
+  season?: {
+    slug?: string;
+    type?: number;
+  };
   competitions: EspnCompetition[];
 }
 
@@ -90,13 +101,26 @@ export interface FixtureRow {
   goals_away: number | null;
   status: string; // "NS" | "FT"
   group_label: string | null;
-  matchday: number; // 1 | 2 | 3 — caller resolves to round_id
+  /**
+   * Round key the caller resolves to round_id after upserting rounds.
+   * Group: "Matchday N". Knockout: the ESPN season slug ("round-of-32", etc).
+   */
+  api_round: string;
+  /**
+   * Knockout only: true when both teams are real World Cup nations (bettable),
+   * false while either side is a placeholder ("Round of 16 3 Winner", "Third
+   * Place Group …"). Always true for group fixtures.
+   */
+  teams_decided: boolean;
+  /** Group only — 1 | 2 | 3. Omitted for knockout fixtures. */
+  matchday?: number;
 }
 
 /** A row ready for upsert into public.rounds (keyed by api_round). */
 export interface RoundRow {
-  api_round: string; // e.g. "Matchday 1"
-  name: string; // same as api_round for display
+  api_round: string; // group: "Matchday 1"; knockout: ESPN slug "round-of-32"
+  name: string; // same as api_round (display label derived in lib/rounds.ts)
+  stage: "group" | "knockout";
 }
 
 // ─── buildTeamGroupMap ────────────────────────────────────────────────────────
@@ -224,6 +248,7 @@ export function mapToFixtureRows(
     .map((md) => ({
       api_round: `Matchday ${md}`,
       name: `Matchday ${md}`,
+      stage: "group" as const,
     }));
 
   // Map fixtures
@@ -257,9 +282,159 @@ export function mapToFixtureRows(
       goals_away: completed ? parseInt(away.score, 10) : null,
       status: completed ? "FT" : "NS",
       group_label: groupLabel,
+      api_round: `Matchday ${matchday}`,
+      teams_decided: true, // group teams are always known
       matchday,
     });
   }
+
+  return { fixtures, rounds };
+}
+
+// ─── Knockout stage ───────────────────────────────────────────────────────────
+
+/**
+ * ESPN season slugs for the World Cup knockout rounds, in bracket order.
+ * `event.season.slug` is the reliable per-event round identifier (mig 032).
+ */
+export const KNOCKOUT_SLUGS = [
+  "round-of-32",
+  "round-of-16",
+  "quarterfinals",
+  "semifinals",
+  "3rd-place-match",
+  "final",
+] as const;
+
+const KNOCKOUT_SLUG_SET = new Set<string>(KNOCKOUT_SLUGS);
+
+/** Classifies an event as 'knockout' (by its season slug) or 'group'. */
+export function classifyStage(event: EspnEvent): "group" | "knockout" {
+  const slug = event.season?.slug;
+  return slug && KNOCKOUT_SLUG_SET.has(slug) ? "knockout" : "group";
+}
+
+/**
+ * Splits events into group vs knockout. Group events must be partitioned out
+ * BEFORE assignMatchdays() — that function counts per-team appearances (=3 for
+ * the group stage) and would assign nonsense matchdays to knockout events.
+ */
+export function partitionByStage(events: EspnEvent[]): {
+  group: EspnEvent[];
+  knockout: EspnEvent[];
+} {
+  const group: EspnEvent[] = [];
+  const knockout: EspnEvent[] = [];
+  for (const ev of events) {
+    if (classifyStage(ev) === "knockout") knockout.push(ev);
+    else group.push(ev);
+  }
+  return { group, knockout };
+}
+
+/**
+ * Fail-safe boundary between the group stage and the knockout stage.
+ *
+ * The WC-2026 group stage ends June 27; the Round of 32 starts June 28. We pick
+ * NOON UTC on June 28 because it sits AFTER the latest possible group kickoff
+ * (a late US-evening June 27 game lands around 04:00 UTC on June 28) and BEFORE
+ * the June 28 afternoon Round-of-32 slot. So any GROUP-classified event past this
+ * instant is almost certainly a knockout match whose season.slug ESPN failed to
+ * provide.
+ */
+export const GROUP_STAGE_END_MS = Date.UTC(2026, 5, 28, 12, 0, 0);
+
+/**
+ * Defensive guard for the single biggest external assumption of the feature:
+ * that ESPN carries a knockout season.slug on every knockout event. classifyStage
+ * silently routes a slug-less event to the GROUP bucket — where it would be fed to
+ * assignMatchdays AND hardcoded teams_decided:true, i.e. become an immediately
+ * bettable group fixture, bypassing progressive habilitation.
+ *
+ * This splits out any group-classified event whose kickoff is in the knockout
+ * window. Dropping it means a slug regression fails SAFE (the match is simply
+ * absent until ESPN fixes the slug on a later sync) instead of fails OPEN (a bogus
+ * bettable match). Group-stage events (all before the boundary) are unaffected.
+ */
+export function dropStrayKnockout(groupEvents: EspnEvent[]): {
+  group: EspnEvent[];
+  dropped: EspnEvent[];
+} {
+  const group: EspnEvent[] = [];
+  const dropped: EspnEvent[] = [];
+  for (const ev of groupEvents) {
+    const kickoffMs = Date.parse(ev.date);
+    if (Number.isFinite(kickoffMs) && kickoffMs >= GROUP_STAGE_END_MS) {
+      dropped.push(ev);
+    } else {
+      group.push(ev);
+    }
+  }
+  return { group, dropped };
+}
+
+/**
+ * A knockout team is "real" (decided) when its ESPN id is one of the 48 World
+ * Cup nations (the keys of the standings group map). Placeholder competitors
+ * like "Round of 16 3 Winner" / "Third Place Group C/E/F/H" carry synthetic ids
+ * absent from that set — robust without parsing display strings.
+ */
+export function isRealCountry(teamId: string, countrySet: Set<string>): boolean {
+  return countrySet.has(teamId);
+}
+
+/**
+ * Maps knockout ESPN events to DB row shapes, mirroring mapToFixtureRows but for
+ * the knockout stage: round key = season slug, group_label is always null, and
+ * teams_decided is computed from the country set (both sides must be real
+ * nations). Rounds are returned in bracket order.
+ *
+ * NOTE: fixtures.round_id is resolved by the caller (via api_round), and
+ * fixtures.locks_at is set by the set_fixture_locks_at DB trigger — not here.
+ */
+export function mapKnockoutFixtureRows(
+  events: EspnEvent[],
+  countrySet: Set<string>
+): { fixtures: FixtureRow[]; rounds: RoundRow[] } {
+  const roundSlugs = new Set<string>();
+  const fixtures: FixtureRow[] = [];
+
+  for (const event of events) {
+    const comp = event.competitions[0];
+    if (!comp) continue;
+
+    const slug = event.season?.slug;
+    if (!slug || !KNOCKOUT_SLUG_SET.has(slug)) continue;
+
+    const home = comp.competitors.find((c) => c.homeAway === "home");
+    const away = comp.competitors.find((c) => c.homeAway === "away");
+    if (!home || !away) continue;
+
+    const completed = comp.status.type.completed;
+    const teamsDecided =
+      isRealCountry(home.team.id, countrySet) &&
+      isRealCountry(away.team.id, countrySet);
+
+    roundSlugs.add(slug);
+    fixtures.push({
+      id: parseInt(event.id, 10),
+      home_team: home.team.displayName,
+      away_team: away.team.displayName,
+      home_logo: home.team.logo ?? null,
+      away_logo: away.team.logo ?? null,
+      kickoff: event.date,
+      goals_home: completed ? parseInt(home.score, 10) : null,
+      goals_away: completed ? parseInt(away.score, 10) : null,
+      status: completed ? "FT" : "NS",
+      group_label: null, // knockout matches belong to no group
+      api_round: slug,
+      teams_decided: teamsDecided,
+    });
+  }
+
+  const rounds: RoundRow[] = [...roundSlugs]
+    .sort((a, b) => KNOCKOUT_SLUGS.indexOf(a as never) - KNOCKOUT_SLUGS.indexOf(b as never))
+    .map((slug) => ({ api_round: slug, name: slug, stage: "knockout" as const }));
 
   return { fixtures, rounds };
 }
