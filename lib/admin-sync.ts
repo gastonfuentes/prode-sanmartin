@@ -24,3 +24,27 @@ export function formatSyncResult(updated: number): string {
   const noun = updated === 1 ? "partido actualizado" : "partidos actualizados";
   return `${updated} ${noun}`;
 }
+
+/**
+ * Builds the user-facing message for a completed knockout calendar sync.
+ *
+ * The calendar sync re-pulls the whole bracket; what the admin cares about is how
+ * many knockout matches now have real teams (i.e. are bettable). So we report the
+ * decided/total split rather than a raw "updated" count:
+ *
+ *   total 0           -> "No hay partidos de eliminatorias todavía"
+ *   decided >= total  -> "Eliminatorias al día: N partidos habilitados"
+ *   else              -> "D de N partidos de eliminatorias habilitados"
+ *
+ * `decided` counts fixtures whose teams are resolved; `total` is all knockout
+ * fixtures. `decided` is clamped to total for the "al día" wording.
+ */
+export function formatCalendarSyncResult(decided: number, total: number): string {
+  if (total <= 0) {
+    return "No hay partidos de eliminatorias todavía";
+  }
+  if (decided >= total) {
+    return `Eliminatorias al día: ${total} partidos habilitados`;
+  }
+  return `${Math.max(decided, 0)} de ${total} partidos de eliminatorias habilitados`;
+}
