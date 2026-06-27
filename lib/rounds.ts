@@ -150,3 +150,31 @@ export function selectCurrentRound(
     return rTime > bestTime ? r : best;
   });
 }
+
+// ── adjacentRoundIds ─────────────────────────────────────────────────────────
+
+/**
+ * Given the navigable round ids in display order (ascending first_kickoff) and
+ * the id currently being viewed, returns the previous/next round ids for
+ * swipe navigation.
+ *
+ * `null` on either side means there is no round to go to (current id is at an
+ * edge, not in the list, or the list is too short). Neighbours follow ARRAY
+ * order, not id magnitude — the caller passes ids already sorted by kickoff,
+ * which need not be ascending by id.
+ *
+ * Pure function — no DB calls, no side effects.
+ */
+export function adjacentRoundIds(
+  orderedRoundIds: number[],
+  currentId: number
+): { prevId: number | null; nextId: number | null } {
+  const index = orderedRoundIds.indexOf(currentId);
+  if (index === -1) {
+    return { prevId: null, nextId: null };
+  }
+  return {
+    prevId: index > 0 ? orderedRoundIds[index - 1] : null,
+    nextId: index < orderedRoundIds.length - 1 ? orderedRoundIds[index + 1] : null,
+  };
+}
