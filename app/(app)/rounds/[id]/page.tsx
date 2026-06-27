@@ -276,18 +276,15 @@ export default async function RoundPage({ params }: RoundPageProps) {
             Posiciones
           </h2>
           <div className="space-y-5">
-            <StandingsTable
-              title="Fecha actual"
-              rows={leaderboardRound}
-            />
-            <StandingsTable
-              title="Eliminatorias"
-              rows={leaderboardKnockout}
-            />
-            <StandingsTable
-              title="General"
-              rows={leaderboardOverall}
-            />
+            {/* Per-competition table, by stage: a knockout round's own standings
+                are practically identical to the aggregate knockout table, so show
+                only one. Group rounds keep "Fecha actual" (this round). */}
+            {isKnockout ? (
+              <StandingsTable title="Eliminatorias" rows={leaderboardKnockout} />
+            ) : (
+              <StandingsTable title="Fecha actual" rows={leaderboardRound} />
+            )}
+            <StandingsTable title="General" rows={leaderboardOverall} />
           </div>
         </div>
 
