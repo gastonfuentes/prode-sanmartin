@@ -26,6 +26,14 @@ export default async function RootPage() {
     redirect("/login");
   }
 
+  // Users without a group are directed to the onboarding page.
+  // Admins always have a group assigned (migration 035), so this never
+  // catches them. The rpc returns null when the user has no group yet.
+  const { data: groupId } = await supabase.rpc("current_user_group_id");
+  if (!groupId) {
+    redirect("/join");
+  }
+
   // Authenticated: resolve the current round
   const { data: rounds } = await supabase
     .from("rounds")

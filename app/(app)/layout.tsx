@@ -34,7 +34,7 @@ export default async function AppLayout({
   // revokes access. is_allowed() returns true for admins (never self-lock-out).
   const { data: allowed } = await supabase.rpc("is_allowed");
   if (!allowed) {
-    redirect("/login?error=access_revoked");
+    redirect("/join");
   }
 
   const isAdmin = await isCurrentUserAdmin(supabase);
