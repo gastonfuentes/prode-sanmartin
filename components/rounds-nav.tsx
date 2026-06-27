@@ -10,8 +10,8 @@
  * pre-ordered by first_kickoff (ascending) from the RSC query.
  */
 
-import Link from "next/link";
 import { roundLabelFromApiRound } from "@/lib/rounds";
+import { RoundPill } from "./round-pill";
 
 interface RoundsNavRound {
   id: number;
@@ -59,18 +59,12 @@ export function RoundsNav({ rounds, activeRoundId }: RoundsNavProps) {
         }
 
         return (
-          <Link
+          <RoundPill
             key={round.id}
-            href={`/rounds/${round.id}`}
-            aria-current={isActive ? "page" : undefined}
-            className={`shrink-0 rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
-              isActive
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            {label}
-          </Link>
+            id={round.id}
+            label={label}
+            isActive={isActive}
+          />
         );
       })}
     </nav>

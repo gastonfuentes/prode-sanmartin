@@ -18,7 +18,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { selectCurrentRound, roundLabelFromApiRound } from "./rounds";
+import {
+  selectCurrentRound,
+  roundLabelFromApiRound,
+  adjacentRoundIds,
+} from "./rounds";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -192,5 +196,54 @@ describe("roundLabelFromApiRound", () => {
 
   it("does NOT mislabel 'round-of-32' as 'Fecha 32' (knockout slug wins over trailing number)", () => {
     expect(roundLabelFromApiRound("round-of-32")).not.toBe("Fecha 32");
+  });
+});
+
+// ── adjacentRoundIds ─────────────────────────────────────────────────────────
+
+describe("adjacentRoundIds", () => {
+  it("returns the neighbours in the middle of the list", () => {
+    expect(adjacentRoundIds([10, 20, 30], 20)).toEqual({
+      prevId: 10,
+      nextId: 30,
+    });
+  });
+
+  it("has no prev at the first position", () => {
+    expect(adjacentRoundIds([10, 20, 30], 10)).toEqual({
+      prevId: null,
+      nextId: 20,
+    });
+  });
+
+  it("has no next at the last position", () => {
+    expect(adjacentRoundIds([10, 20, 30], 30)).toEqual({
+      prevId: 20,
+      nextId: null,
+    });
+  });
+
+  it("returns both null when the current id is not in the list", () => {
+    expect(adjacentRoundIds([10, 20, 30], 99)).toEqual({
+      prevId: null,
+      nextId: null,
+    });
+  });
+
+  it("returns both null for a single-element list (nowhere to swipe)", () => {
+    expect(adjacentRoundIds([10], 10)).toEqual({ prevId: null, nextId: null });
+  });
+
+  it("returns both null for an empty list", () => {
+    expect(adjacentRoundIds([], 10)).toEqual({ prevId: null, nextId: null });
+  });
+
+  it("respects the given order, not numeric value (ids may be unsorted by id)", () => {
+    // The caller passes ids already ordered by first_kickoff, which need not be
+    // ascending by id. Neighbours follow array order, not id magnitude.
+    expect(adjacentRoundIds([30, 10, 20], 10)).toEqual({
+      prevId: 30,
+      nextId: 20,
+    });
   });
 });

@@ -1,30 +1,38 @@
 /**
  * Round page — RSC.
  *
- * Fetches:
+ * Fetches (fast path, blocking — these gate the fixtures the user came to see):
  *   1. Round metadata (name, api_round, locks_at)
  *   2. Fixtures for this round (ordered by kickoff)
  *   3. The authenticated user's predictions for those fixtures (RLS-scoped)
- *   4. Participants via list_participants() — profiles + active flag (Participantes panel)
- *   5. Leaderboard for this round and overall (for Posiciones panel)
+ *   4. All participants' predictions for the round (per-fixture privacy gate)
+ *
+ * The heavy window-function queries (participants + the three leaderboards) live
+ * in <RoundSidePanel>, streamed via <Suspense> so the fixtures paint first and
+ * Posiciones + Participantes fill in after (no 8-query barrier on navigation).
  *
  * Derives the locked state from now() >= round.locks_at (REQ-3.3 — authoritative
  * lock is server time, NOT the status column).
  *
- * Layout: two-column on md+. Left: fixture list + prediction form. Right: panel
- * with Participantes + Posiciones sections. On mobile the panel stacks below.
+ * Layout: two-column on md+. Left: fixture list + prediction form (wrapped in
+ * <SwipeNavigator> for mobile swipe between rounds). Right: streamed panel with
+ * Posiciones + Participantes. On mobile the panel stacks below.
  *
  * TASK-30 — REQ-2.1–2.4, REQ-3.3, REQ-6.1–6.8.
  */
 
+import { Suspense } from "react";
 import { notFound, redirect } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isRoundLocked } from "@/lib/scoring";
-import { roundLabelFromApiRound } from "@/lib/rounds";
+import { roundLabelFromApiRound, adjacentRoundIds } from "@/lib/rounds";
 import { PredictionForm } from "@/components/prediction-form";
 import { RoundsNav } from "@/components/rounds-nav";
-import { ParticipantsList } from "@/components/participants-list";
-import { StandingsTable } from "@/components/standings-table";
+import { SwipeNavigator } from "@/components/swipe-navigator";
+import {
+  RoundSidePanel,
+  RoundSidePanelSkeleton,
+} from "@/components/round-side-panel";
 import { submitPredictions } from "./actions";
 
 interface RoundPageProps {
@@ -69,43 +77,28 @@ export default async function RoundPage({ params }: RoundPageProps) {
   // do NOT modify api_round in the DB (it is the sync grouping key).
   const roundLabel = roundLabelFromApiRound(round.api_round);
 
-  // Fetch fixtures, all rounds (for the nav), profiles, and leaderboard data in parallel
-  const [
-    fixturesResult,
-    roundsResult,
-    profilesResult,
-    leaderboardRoundResult,
-    leaderboardOverallResult,
-    leaderboardKnockoutResult,
-    roundPredictionsResult,
-  ] = await Promise.all([
-    supabase
-      .from("fixtures")
-      .select(
-        "id, home_team, away_team, home_logo, away_logo, group_label, kickoff, goals_home, goals_away, status, teams_decided, locks_at"
-      )
-      .eq("round_id", roundId)
-      .order("kickoff", { ascending: true }),
+  // Fast path: fixtures, all rounds (for the nav), and round predictions. The
+  // leaderboards + participants are streamed separately in <RoundSidePanel>.
+  const [fixturesResult, roundsResult, roundPredictionsResult] =
+    await Promise.all([
+      supabase
+        .from("fixtures")
+        .select(
+          "id, home_team, away_team, home_logo, away_logo, group_label, kickoff, goals_home, goals_away, status, teams_decided, locks_at"
+        )
+        .eq("round_id", roundId)
+        .order("kickoff", { ascending: true }),
 
-    supabase
-      .from("rounds")
-      .select("id, api_round, first_kickoff, locks_at, is_active")
-      .order("first_kickoff", { ascending: true }),
+      supabase
+        .from("rounds")
+        .select("id, api_round, first_kickoff, locks_at, is_active")
+        .order("first_kickoff", { ascending: true }),
 
-    supabase.rpc("list_participants"),
-
-    supabase.rpc("leaderboard", { p_round_id: roundId }),
-
-    supabase.rpc("leaderboard_overall"),
-
-    // Knockout-only standings (grand total stays in leaderboard_overall).
-    supabase.rpc("leaderboard_knockout"),
-
-    // All participants' predictions for this round. The RPC enforces the
-    // post-lock privacy gate PER FIXTURE (zero rows for a match before its lock),
-    // so still-open knockout matches never leak.
-    supabase.rpc("round_predictions", { p_round_id: roundId }),
-  ]);
+      // All participants' predictions for this round. The RPC enforces the
+      // post-lock privacy gate PER FIXTURE (zero rows for a match before its lock),
+      // so still-open knockout matches never leak.
+      supabase.rpc("round_predictions", { p_round_id: roundId }),
+    ]);
 
   const { data: fixtures, error: fixturesError } = fixturesResult;
 
@@ -142,33 +135,17 @@ export default async function RoundPage({ params }: RoundPageProps) {
     locks_at: string | null;
     is_active: boolean;
   }>;
-  const profiles = (profilesResult.data ?? []) as Array<{
-    id: string;
-    display_name: string | null;
-    avatar_url: string | null;
-    active: boolean;
-  }>;
-  const leaderboardRound = (leaderboardRoundResult.data ?? []) as Array<{
-    id: string;
-    rank: number;
-    display_name: string | null;
-    avatar_url: string | null;
-    total_points: number;
-  }>;
-  const leaderboardOverall = (leaderboardOverallResult.data ?? []) as Array<{
-    id: string;
-    rank: number;
-    display_name: string | null;
-    avatar_url: string | null;
-    total_points: number;
-  }>;
-  const leaderboardKnockout = (leaderboardKnockoutResult.data ?? []) as Array<{
-    id: string;
-    rank: number;
-    display_name: string | null;
-    avatar_url: string | null;
-    total_points: number;
-  }>;
+
+  // Previous/next round for mobile swipe. The navigable set mirrors the nav's
+  // clickable pills: visible (is_active) rounds plus the one being viewed (an
+  // admin may be on a hidden round). allRounds is already ordered by kickoff.
+  const navigableRoundIds = allRounds
+    .filter((r) => r.is_active || r.id === roundId)
+    .map((r) => r.id);
+  const { prevId: prevRoundId, nextId: nextRoundId } = adjacentRoundIds(
+    navigableRoundIds,
+    roundId
+  );
 
   // Per-fixture lock + decided state. Group fixtures: decided always true, locked
   // = round-level lock. Knockout fixtures: decided = teams_decided, locked = the
@@ -248,53 +225,35 @@ export default async function RoundPage({ params }: RoundPageProps) {
         )}
       </div>
 
-      {/* ── LEFT COLUMN: fixtures + prediction form — col 1 / row 2 ──────── */}
+      {/* ── LEFT COLUMN: fixtures + prediction form — col 1 / row 2 ──────────
+          Wrapped in SwipeNavigator so mobile users can swipe between rounds. */}
       <div className="min-w-0 md:col-start-1 md:row-start-2">
-        {fixtures.length === 0 ? (
-          <div className="py-16 text-center text-sm text-gray-500">
-            No hay partidos programados para esta fecha.
-          </div>
-        ) : (
-          <PredictionForm
-            roundId={roundId}
-            roundLabel={roundLabel}
-            fixtures={enrichedFixtures}
-            predictions={predictions}
-            othersByFixture={othersByFixture}
-            isLocked={isKnockout ? false : roundLocked}
-            submitAction={submitPredictions}
-          />
-        )}
+        <SwipeNavigator prevRoundId={prevRoundId} nextRoundId={nextRoundId}>
+          {fixtures.length === 0 ? (
+            <div className="py-16 text-center text-sm text-gray-500">
+              No hay partidos programados para esta fecha.
+            </div>
+          ) : (
+            <PredictionForm
+              roundId={roundId}
+              roundLabel={roundLabel}
+              fixtures={enrichedFixtures}
+              predictions={predictions}
+              othersByFixture={othersByFixture}
+              isLocked={isKnockout ? false : roundLocked}
+              submitAction={submitPredictions}
+            />
+          )}
+        </SwipeNavigator>
       </div>
 
       {/* ── RIGHT PANEL: Posiciones + Participantes — col 2 / row 2, so it
-          lines up with the top of the first fixture card. ──────────────── */}
+          lines up with the top of the first fixture card. Streamed via
+          <Suspense> so the heavy leaderboards never block the fixtures. ──── */}
       <aside className="space-y-6 md:col-start-2 md:row-start-2">
-        {/* Posiciones */}
-        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
-          <h2 className="mb-4 text-sm font-semibold text-gray-900">
-            Posiciones
-          </h2>
-          <div className="space-y-5">
-            {/* Per-competition table, by stage: a knockout round's own standings
-                are practically identical to the aggregate knockout table, so show
-                only one. Group rounds keep "Fecha actual" (this round). */}
-            {isKnockout ? (
-              <StandingsTable title="Eliminatorias" rows={leaderboardKnockout} />
-            ) : (
-              <StandingsTable title="Fecha actual" rows={leaderboardRound} />
-            )}
-            <StandingsTable title="General" rows={leaderboardOverall} />
-          </div>
-        </div>
-
-        {/* Participantes */}
-        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold text-gray-900">
-            Participantes
-          </h2>
-          <ParticipantsList profiles={profiles} />
-        </div>
+        <Suspense fallback={<RoundSidePanelSkeleton />}>
+          <RoundSidePanel roundId={roundId} isKnockout={isKnockout} />
+        </Suspense>
       </aside>
     </div>
   );
