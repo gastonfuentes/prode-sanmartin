@@ -38,6 +38,17 @@ interface Fixture {
   goals_home: number | null;
   goals_away: number | null;
   status: string;
+  /**
+   * Whether this match accepts predictions right now (its own lock has not
+   * passed). Group: equals the round-level lock. Knockout: per-match lock.
+   */
+  locked: boolean;
+  /**
+   * Whether both teams are known. Group: always true. Knockout: false while a
+   * side is still a placeholder ("ganador de…") — the card shows "Equipos por
+   * definir" and accepts no input until the bracket resolves.
+   */
+  decided: boolean;
 }
 
 interface ExistingPrediction {
@@ -122,11 +133,16 @@ export function PredictionForm({
     // Build a per-fixture lookup so we can include team names in error messages
     const fixtureById = new Map(fixtures.map((f) => [f.id, f]));
 
-    const entries = fixtures.map((f) => ({
-      fixtureId: f.id,
-      home: formState[f.id]?.home ?? "",
-      away: formState[f.id]?.away ?? "",
-    }));
+    // Only matches that are decided AND still open can be submitted. Undecided
+    // (knockout placeholder) and locked matches are excluded — the DB rejects
+    // them anyway, but filtering here keeps the payload and the UX clean.
+    const entries = fixtures
+      .filter((f) => f.decided && !f.locked)
+      .map((f) => ({
+        fixtureId: f.id,
+        home: formState[f.id]?.home ?? "",
+        away: formState[f.id]?.away ?? "",
+      }));
 
     // Client-side classification — partial saves are allowed (REQ-2.1).
     // Empty fixtures are skipped; half-filled ones block the submit.
@@ -219,6 +235,24 @@ export function PredictionForm({
             timeZone: "America/Argentina/Buenos_Aires",
             timeZoneName: "short",
           });
+          // Knockout match whose teams aren't decided yet: no inputs, no score.
+          if (!fixture.decided) {
+            return (
+              <div
+                key={fixture.id}
+                className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-5 text-center"
+              >
+                <p className="text-xs text-gray-400">{kickoffLabel}</p>
+                <p className="mt-2 text-sm font-medium text-gray-500">
+                  Equipos por definir
+                </p>
+                <p className="mt-1 text-xs text-gray-400">
+                  Se habilita cuando se conozcan los clasificados.
+                </p>
+              </div>
+            );
+          }
+
           const group = getGroupAppearance(fixture.group_label);
           const isFinished =
             fixture.status === "FT" &&
@@ -292,7 +326,7 @@ export function PredictionForm({
                       onChange={(e) =>
                         handleChange(fixture.id, "home", e.target.value)
                       }
-                      disabled={isLocked || isPending}
+                      disabled={fixture.locked || isPending}
                       aria-label={`Goles predichos para ${fixture.home_team}`}
                       className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                     />
@@ -306,7 +340,7 @@ export function PredictionForm({
                       onChange={(e) =>
                         handleChange(fixture.id, "away", e.target.value)
                       }
-                      disabled={isLocked || isPending}
+                      disabled={fixture.locked || isPending}
                       aria-label={`Goles predichos para ${fixture.away_team}`}
                       className="h-10 w-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-bold text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                     />
@@ -379,8 +413,8 @@ export function PredictionForm({
         })}
       </div>
 
-      {/* Submit — hidden when locked */}
-      {!isLocked && (
+      {/* Submit — shown only when at least one match is open and decided */}
+      {fixtures.some((f) => f.decided && !f.locked) && (
         <div className="mt-6">
           <button
             type="submit"

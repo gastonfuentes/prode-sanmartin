@@ -35,8 +35,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   assignMatchdays,
   buildTeamGroupMap,
+  dropStrayKnockout,
   filterCompleted,
+  mapKnockoutFixtureRows,
   mapToFixtureRows,
+  partitionByStage,
   type EspnEvent,
   type EspnScoreboardResponse,
   type EspnStandingsResponse,
@@ -50,9 +53,13 @@ const ESPN_BASE =
 const ESPN_STANDINGS =
   "https://site.api.espn.com/apis/v2/sports/soccer/fifa.world/standings?season=2026";
 
-/** WC 2026 group stage date range (inclusive). June 11–27 is exactly the 72
- *  group matches; June 28 begins the Round of 32, which is out of scope. */
-const WC_DATE_RANGE = "20260611-20260627";
+/** WC 2026 full tournament date range (inclusive): group stage (Jun 11–27) plus
+ *  the knockout stage through the final (~Jul 19). Fetched in chunked windows
+ *  (see fetchEspnCalendar) so a single large range cannot exceed any ESPN cap. */
+const WC_CALENDAR_START = "20260611";
+const WC_CALENDAR_END = "20260719";
+/** Max span per ESPN scoreboard call when chunking the calendar window. */
+const WC_CALENDAR_WINDOW_DAYS = 10;
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
@@ -113,35 +120,66 @@ Deno.serve(async (req: Request) => {
 // ─── Calendar mode ────────────────────────────────────────────────────────────
 
 /**
- * Calendar mode: fetch the full WC 2026 group stage schedule in one API call,
- * derive matchdays, upsert rounds + fixtures, then recompute each round's
- * first_kickoff (which triggers locks_at via the set_round_locks_at DB trigger).
+ * Calendar mode: fetch the full WC 2026 schedule (group + knockout) in chunked
+ * windows, split it by stage, derive group matchdays / knockout rounds, upsert
+ * rounds + fixtures, then recompute each round's first_kickoff (which triggers
+ * locks_at via the set_round_locks_at DB trigger).
  *
- * Idempotent: upserts use ON CONFLICT DO UPDATE so re-running is safe.
+ * Knockout specifics:
+ *   - Round key is the ESPN season slug ("round-of-32", …); rounds carry
+ *     stage = 'knockout'.
+ *   - teams_decided is computed from the 48 World Cup nation ids. It is MONOTONIC:
+ *     we never downgrade an already-decided match to undecided (a knockout match's
+ *     teams never un-resolve, and it protects against a degraded standings fetch).
+ *   - fixtures.locks_at is set by the set_fixture_locks_at DB trigger on upsert.
+ *
+ * Idempotent: upserts use ON CONFLICT DO UPDATE so re-running is safe. As ESPN
+ * resolves a bracket, the next run flips placeholder teams to real nations and
+ * teams_decided false → true.
  */
 async function runCalendar(
   supabase: ReturnType<typeof createClient>
 ): Promise<Response> {
   // Fetch scoreboard (fixtures) and standings (group labels) in parallel
   const [events, standingsData] = await Promise.all([
-    fetchEspnEvents(WC_DATE_RANGE),
+    fetchEspnCalendar(),
     fetchEspnStandings(),
   ]);
 
-  // Build group map (teamId → groupName) — best-effort; falls back to empty map
+  // Build group map (teamId → groupName) — best-effort; falls back to empty map.
+  // Its keys are the 48 WC nation ids, used to decide knockout teams.
   const groupMap = standingsData ? buildTeamGroupMap(standingsData) : new Map<string, string>();
+  const countrySet = new Set<string>(groupMap.keys());
 
-  const matchdays = assignMatchdays(events);
-  const { fixtures, rounds } = mapToFixtureRows(events, matchdays, groupMap);
+  // Split by stage BEFORE assignMatchdays (which is group-stage-only logic).
+  const { group: rawGroupEvents, knockout: knockoutEvents } = partitionByStage(events);
 
-  // 1. Upsert rounds (api_round is the unique key)
+  // Fail-safe: a knockout event whose ESPN season.slug is missing/renamed would
+  // fall into the group bucket and become an immediately bettable group fixture.
+  // Drop any group-classified event in the knockout window so it fails safe.
+  const { group: groupEvents, dropped: strayKnockout } = dropStrayKnockout(rawGroupEvents);
+  for (const ev of strayKnockout) {
+    console.warn(
+      `[sync] event ${ev.id} classified group but kickoff ${ev.date} is in the knockout window (missing/renamed season.slug?) — skipping to avoid a bogus immediately-bettable group match`
+    );
+  }
+
+  const matchdays = assignMatchdays(groupEvents);
+  const groupMapped = mapToFixtureRows(groupEvents, matchdays, groupMap);
+  const knockoutMapped = mapKnockoutFixtureRows(knockoutEvents, countrySet);
+
+  const rounds = [...groupMapped.rounds, ...knockoutMapped.rounds];
+  const fixtures = [...groupMapped.fixtures, ...knockoutMapped.fixtures];
+
+  // 1. Upsert rounds (api_round is the unique key; only api_round/name/stage are
+  //    written, so admin is_active and first_kickoff/locks_at are left intact)
   const { error: roundsError } = await supabase.from("rounds").upsert(
     rounds,
     { onConflict: "api_round", ignoreDuplicates: false }
   );
   if (roundsError) throw new Error(`rounds upsert: ${roundsError.message}`);
 
-  // 2. Fetch round id → matchday mapping
+  // 2. Resolve round_id by api_round (unified for group "Matchday N" and KO slugs)
   const { data: roundRows, error: roundFetchError } = await supabase
     .from("rounds")
     .select("id, api_round")
@@ -152,24 +190,57 @@ async function runCalendar(
   if (roundFetchError)
     throw new Error(`rounds fetch: ${roundFetchError.message}`);
 
-  const roundIdByMatchday = new Map<number, number>();
+  const roundIdByApiRound = new Map<string, number>();
   for (const row of roundRows ?? []) {
-    const md = parseInt(row.api_round.replace("Matchday ", ""), 10);
-    roundIdByMatchday.set(md, row.id);
+    roundIdByApiRound.set(row.api_round as string, row.id as number);
   }
 
-  // 3. Build fixture rows with resolved round_id
+  // 3. Monotonic teams_decided: read existing values for knockout fixtures so a
+  //    degraded standings fetch (or any false recompute) can never downgrade a
+  //    match that was already decided.
+  const knockoutIds = knockoutMapped.fixtures.map((f) => f.id);
+  const existingDecided = new Map<number, boolean>();
+  if (knockoutIds.length > 0) {
+    const { data: existing, error: existingError } = await supabase
+      .from("fixtures")
+      .select("id, teams_decided")
+      .in("id", knockoutIds);
+    if (existingError) {
+      console.warn(
+        `[sync] existing teams_decided fetch failed: ${existingError.message}`
+      );
+    } else {
+      for (const row of existing ?? []) {
+        existingDecided.set(row.id as number, row.teams_decided as boolean);
+      }
+    }
+  }
+
+  // 4. Build DB fixture rows with resolved round_id. Explicit columns only —
+  //    locks_at is trigger-managed and must not be sent.
   const fixtureRowsWithRound = fixtures
     .map((f) => {
-      const roundId = roundIdByMatchday.get(f.matchday);
-      if (!roundId) return null;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { matchday: _matchday, ...rest } = f;
-      return { ...rest, round_id: roundId };
+      const round_id = roundIdByApiRound.get(f.api_round);
+      if (!round_id) return null;
+      const teams_decided = f.teams_decided || (existingDecided.get(f.id) ?? false);
+      return {
+        id: f.id,
+        round_id,
+        home_team: f.home_team,
+        away_team: f.away_team,
+        home_logo: f.home_logo,
+        away_logo: f.away_logo,
+        kickoff: f.kickoff,
+        goals_home: f.goals_home,
+        goals_away: f.goals_away,
+        status: f.status,
+        group_label: f.group_label,
+        teams_decided,
+      };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
 
-  // 4. Upsert fixtures (id = ESPN event id, natural PK)
+  // 5. Upsert fixtures (id = ESPN event id, natural PK)
   const { error: fixturesError } = await supabase.from("fixtures").upsert(
     fixtureRowsWithRound,
     { onConflict: "id", ignoreDuplicates: false }
@@ -177,7 +248,7 @@ async function runCalendar(
   if (fixturesError)
     throw new Error(`fixtures upsert: ${fixturesError.message}`);
 
-  // 5. Recompute first_kickoff for each round.
+  // 6. Recompute first_kickoff for each round.
   //    The set_round_locks_at trigger fires automatically when first_kickoff changes.
   for (const round of roundRows ?? []) {
     const { error: kickoffError } = await supabase.rpc(
@@ -200,6 +271,7 @@ async function runCalendar(
       events: events.length,
       fixtures: fixtureRowsWithRound.length,
       rounds: roundRows?.length ?? 0,
+      knockout_fixtures: knockoutMapped.fixtures.length,
     }),
     { headers: { "Content-Type": "application/json" } }
   );
@@ -330,6 +402,58 @@ async function fetchEspnEvents(dates: string): Promise<EspnEvent[]> {
   }
   const data: EspnScoreboardResponse = await res.json();
   return data.events ?? [];
+}
+
+/**
+ * Build inclusive "YYYYMMDD-YYYYMMDD" windows of at most `windowDays` days each,
+ * spanning [startYMD, endYMD]. Used to chunk the calendar fetch so a single very
+ * wide range can never exceed an ESPN scoreboard cap.
+ */
+function buildDateWindows(
+  startYMD: string,
+  endYMD: string,
+  windowDays: number
+): string[] {
+  const parse = (s: string) =>
+    new Date(
+      Date.UTC(
+        parseInt(s.slice(0, 4), 10),
+        parseInt(s.slice(4, 6), 10) - 1,
+        parseInt(s.slice(6, 8), 10)
+      )
+    );
+  const addDays = (d: Date, n: number) =>
+    new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + n));
+
+  const end = parse(endYMD);
+  const windows: string[] = [];
+  let cursor = parse(startYMD);
+
+  while (cursor <= end) {
+    const winEnd = addDays(cursor, windowDays - 1);
+    const clampedEnd = winEnd > end ? end : winEnd;
+    windows.push(`${formatDateForEspn(cursor)}-${formatDateForEspn(clampedEnd)}`);
+    cursor = addDays(clampedEnd, 1);
+  }
+  return windows;
+}
+
+/**
+ * Fetch the entire WC 2026 calendar (group + knockout) in chunked windows and
+ * dedupe events by id. Sequential to stay polite to the unofficial ESPN API.
+ */
+async function fetchEspnCalendar(): Promise<EspnEvent[]> {
+  const windows = buildDateWindows(
+    WC_CALENDAR_START,
+    WC_CALENDAR_END,
+    WC_CALENDAR_WINDOW_DAYS
+  );
+  const byId = new Map<string, EspnEvent>();
+  for (const window of windows) {
+    const events = await fetchEspnEvents(window);
+    for (const ev of events) byId.set(ev.id, ev);
+  }
+  return [...byId.values()];
 }
 
 /**

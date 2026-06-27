@@ -15,6 +15,12 @@ import {
   assignMatchdays,
   mapToFixtureRows,
   filterCompleted,
+  classifyStage,
+  partitionByStage,
+  dropStrayKnockout,
+  isRealCountry,
+  mapKnockoutFixtureRows,
+  KNOCKOUT_SLUGS,
   type EspnEvent,
   type FixtureRow,
   type RoundRow,
@@ -256,6 +262,22 @@ describe("mapToFixtureRows", () => {
     const md2Fixture = fixtures.find((f) => f.id === 760500);
     expect(md1Fixture?.matchday).toBe(1);
     expect(md2Fixture?.matchday).toBe(2);
+  });
+
+  it("group fixtures are always teams_decided and carry the Matchday api_round", () => {
+    const matchdays = assignMatchdays([event1, event3]);
+    const { fixtures } = mapToFixtureRows([event1, event3], matchdays);
+    const md1 = fixtures.find((f) => f.id === 760415);
+    const md2 = fixtures.find((f) => f.id === 760500);
+    expect(md1?.teams_decided).toBe(true);
+    expect(md1?.api_round).toBe("Matchday 1");
+    expect(md2?.api_round).toBe("Matchday 2");
+  });
+
+  it("group rounds carry stage 'group'", () => {
+    const matchdays = assignMatchdays([event1]);
+    const { rounds } = mapToFixtureRows([event1], matchdays);
+    expect(rounds[0].stage).toBe("group");
   });
 
   it("handles 72 events without error", () => {
@@ -617,5 +639,188 @@ describe("group_label assignment in mapToFixtureRows", () => {
     const md = assignMatchdays([ev]);
     const { fixtures } = mapToFixtureRows([ev], md);
     expect("group_label" in fixtures[0]).toBe(true);
+  });
+});
+
+// ─── Knockout stage ───────────────────────────────────────────────────────────
+
+/** Build a knockout ESPN event with a season slug and chosen team ids/names. */
+function makeKnockoutEvent(
+  overrides: Partial<{
+    id: string;
+    date: string;
+    slug: string;
+    seasonType: number;
+    homeName: string;
+    homeId: string;
+    awayName: string;
+    awayId: string;
+    homeScore: string;
+    awayScore: string;
+    completed: boolean;
+  }> = {}
+): EspnEvent {
+  const o = {
+    id: "760486",
+    date: "2026-06-28T19:00Z",
+    slug: "round-of-32",
+    seasonType: 13801,
+    homeName: "Brazil",
+    homeId: "205",
+    awayName: "Japan",
+    awayId: "296",
+    homeScore: "0",
+    awayScore: "0",
+    completed: false,
+    ...overrides,
+  };
+  return {
+    id: o.id,
+    date: o.date,
+    name: `${o.awayName} at ${o.homeName}`,
+    uid: `s:600~l:606~e:${o.id}`,
+    season: { slug: o.slug, type: o.seasonType },
+    competitions: [
+      {
+        id: o.id,
+        status: { type: { completed: o.completed, state: o.completed ? "post" : "pre" } },
+        competitors: [
+          { homeAway: "home", score: o.homeScore, team: { id: o.homeId, displayName: o.homeName } },
+          { homeAway: "away", score: o.awayScore, team: { id: o.awayId, displayName: o.awayName } },
+        ],
+      },
+    ],
+  };
+}
+
+describe("classifyStage", () => {
+  it("classifies events with a knockout season slug as 'knockout'", () => {
+    for (const slug of KNOCKOUT_SLUGS) {
+      expect(classifyStage(makeKnockoutEvent({ slug }))).toBe("knockout");
+    }
+  });
+
+  it("classifies group-stage events (no knockout slug) as 'group'", () => {
+    expect(classifyStage(event1)).toBe("group");
+    expect(classifyStage(makeKnockoutEvent({ slug: "group-stage" }))).toBe("group");
+  });
+
+  it("FAILURE MODE: a slug-less event defaults to 'group' (documents why dropStrayKnockout exists)", () => {
+    // If ESPN omits season.slug on a knockout event, classifyStage cannot tell —
+    // it falls back to 'group'. dropStrayKnockout is the date-based safety net.
+    const slugless = makeKnockoutEvent({ slug: undefined });
+    expect(classifyStage(slugless)).toBe("group");
+  });
+});
+
+describe("dropStrayKnockout", () => {
+  it("drops a group-classified event whose kickoff is in the knockout window", () => {
+    // A real knockout match that lost its slug → lands in group with a July date.
+    const stray = makeKnockoutEvent({ id: "999", slug: undefined, date: "2026-07-11T21:00Z" });
+    const { group, dropped } = dropStrayKnockout([stray]);
+    expect(group).toHaveLength(0);
+    expect(dropped.map((e) => e.id)).toEqual(["999"]);
+  });
+
+  it("keeps genuine group-stage events (before the boundary)", () => {
+    // event1 (Jun 11) and a late Jun 27 evening game (~Jun 28 01:00 UTC) both stay.
+    const lateGroup = makeEvent({ id: "777", date: "2026-06-28T01:00Z" });
+    const { group, dropped } = dropStrayKnockout([event1, lateGroup]);
+    expect(group.map((e) => e.id).sort()).toEqual(["760415", "777"]);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it("does not crash on an unparseable date (keeps the event)", () => {
+    const weird = makeEvent({ id: "555", date: "not-a-date" });
+    const { group, dropped } = dropStrayKnockout([weird]);
+    expect(group.map((e) => e.id)).toEqual(["555"]);
+    expect(dropped).toHaveLength(0);
+  });
+});
+
+describe("partitionByStage", () => {
+  it("splits a mixed list into group and knockout buckets", () => {
+    const ko = makeKnockoutEvent({ id: "900", slug: "quarterfinals" });
+    const { group, knockout } = partitionByStage([event1, ko, event2]);
+    expect(group.map((e) => e.id).sort()).toEqual(["760414", "760415"]);
+    expect(knockout.map((e) => e.id)).toEqual(["900"]);
+  });
+
+  it("keeps knockout events out of the group bucket so assignMatchdays is untouched", () => {
+    const ko = makeKnockoutEvent({ id: "900", slug: "final" });
+    const { group } = partitionByStage([ko]);
+    expect(group).toHaveLength(0);
+  });
+});
+
+describe("isRealCountry", () => {
+  const countries = new Set(["205", "296"]);
+  it("returns true for an id in the country set", () => {
+    expect(isRealCountry("205", countries)).toBe(true);
+  });
+  it("returns false for a placeholder id absent from the set", () => {
+    expect(isRealCountry("760491", countries)).toBe(false);
+  });
+});
+
+describe("mapKnockoutFixtureRows", () => {
+  const countries = new Set(["205", "296", "203", "467"]);
+
+  it("uses the season slug as the round api_round and stage 'knockout'", () => {
+    const ev = makeKnockoutEvent({ slug: "round-of-16" });
+    const { fixtures, rounds } = mapKnockoutFixtureRows([ev], countries);
+    expect(fixtures[0].api_round).toBe("round-of-16");
+    expect(rounds[0].api_round).toBe("round-of-16");
+    expect(rounds[0].stage).toBe("knockout");
+  });
+
+  it("marks teams_decided true when both teams are real nations", () => {
+    const ev = makeKnockoutEvent({ homeId: "205", awayId: "296" });
+    const { fixtures } = mapKnockoutFixtureRows([ev], countries);
+    expect(fixtures[0].teams_decided).toBe(true);
+  });
+
+  it("marks teams_decided false when either side is a placeholder", () => {
+    // "Round of 16 3 Winner" placeholder → synthetic id not in the country set
+    const ev = makeKnockoutEvent({
+      homeName: "Round of 16 3 Winner",
+      homeId: "760601",
+      awayId: "296",
+    });
+    const { fixtures } = mapKnockoutFixtureRows([ev], countries);
+    expect(fixtures[0].teams_decided).toBe(false);
+  });
+
+  it("always sets group_label to null for knockout fixtures", () => {
+    const ev = makeKnockoutEvent();
+    const { fixtures } = mapKnockoutFixtureRows([ev], countries);
+    expect(fixtures[0].group_label).toBeNull();
+  });
+
+  it("maps FT goals for a completed knockout match", () => {
+    const ev = makeKnockoutEvent({ completed: true, homeScore: "2", awayScore: "1" });
+    const { fixtures } = mapKnockoutFixtureRows([ev], countries);
+    expect(fixtures[0].status).toBe("FT");
+    expect(fixtures[0].goals_home).toBe(2);
+    expect(fixtures[0].goals_away).toBe(1);
+  });
+
+  it("leaves goals null and status NS for an unplayed knockout match", () => {
+    const ev = makeKnockoutEvent();
+    const { fixtures } = mapKnockoutFixtureRows([ev], countries);
+    expect(fixtures[0].status).toBe("NS");
+    expect(fixtures[0].goals_home).toBeNull();
+  });
+
+  it("produces one round per distinct slug, in bracket order", () => {
+    const r32 = makeKnockoutEvent({ id: "1", slug: "round-of-32" });
+    const fin = makeKnockoutEvent({ id: "2", slug: "final" });
+    const qf = makeKnockoutEvent({ id: "3", slug: "quarterfinals" });
+    const { rounds } = mapKnockoutFixtureRows([fin, r32, qf], countries);
+    expect(rounds.map((r) => r.api_round)).toEqual([
+      "round-of-32",
+      "quarterfinals",
+      "final",
+    ]);
   });
 });

@@ -29,14 +29,44 @@ export default async function RootPage() {
   // Authenticated: resolve the current round
   const { data: rounds } = await supabase
     .from("rounds")
-    .select("id, name, api_round, first_kickoff, locks_at, status")
+    .select("id, name, api_round, first_kickoff, locks_at, status, stage")
     // Only active rounds are redirect targets. A round hidden by the admin must
     // not be the post-login destination — even for admins, who bypass the RLS
     // visibility filter and would otherwise still land on the hidden round.
     .eq("is_active", true)
     .order("first_kickoff", { ascending: true });
 
-  const current = rounds ? selectCurrentRound(rounds as RoundSummary[], new Date()) : null;
+  let summaries: RoundSummary[] = (rounds ?? []) as RoundSummary[];
+
+  // A knockout round's round-level locks_at is only its EARLIEST match, so it
+  // can't tell selectCurrentRound that later matches are still open. Compute
+  // per-round openness: a KO round is "current-eligible" only while it has a
+  // decided fixture whose lock has not passed.
+  const knockoutRoundIds = summaries
+    .filter((r) => r.stage === "knockout")
+    .map((r) => r.id);
+
+  if (knockoutRoundIds.length > 0) {
+    const { data: openFixtures } = await supabase
+      .from("fixtures")
+      .select("round_id")
+      .in("round_id", knockoutRoundIds)
+      .eq("teams_decided", true)
+      .gt("locks_at", new Date().toISOString());
+
+    const openRoundIds = new Set(
+      (openFixtures ?? []).map((f) => f.round_id as number)
+    );
+    summaries = summaries.map((r) =>
+      r.stage === "knockout"
+        ? { ...r, has_open_fixture: openRoundIds.has(r.id) }
+        : r
+    );
+  }
+
+  const current = summaries.length
+    ? selectCurrentRound(summaries, new Date())
+    : null;
 
   if (!current) {
     // No rounds seeded yet — show a brief holding page

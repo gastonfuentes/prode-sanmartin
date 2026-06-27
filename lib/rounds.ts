@@ -18,19 +18,34 @@ import { isRoundLocked } from "./scoring";
 // ── roundLabelFromApiRound ──────────────────────────────────────────────────
 
 /**
- * Derives the Spanish display label "Fecha N" from the api_round string.
+ * Knockout rounds store their ESPN season slug in api_round (see
+ * supabase/functions/sync/espn.ts). Map each to its Spanish display label.
+ */
+const KNOCKOUT_LABELS: Record<string, string> = {
+  "round-of-32": "16avos",
+  "round-of-16": "Octavos",
+  quarterfinals: "Cuartos",
+  semifinals: "Semis",
+  "3rd-place-match": "3er puesto",
+  final: "Final",
+};
+
+/**
+ * Derives the Spanish display label from the api_round string.
  *
- * The calendar sync writes api_round as "Matchday N" (e.g. "Matchday 3") — see
- * supabase/functions/sync/index.ts. The legacy "Group Stage - N" form is also
- * accepted for forward/backward compatibility. We extract the trailing integer
- * and return "Fecha N", falling back to the raw string when no trailing number
- * is found (knockout rounds or unknown formats — out of v1 scope, but handled
- * gracefully).
+ * Knockout rounds use the ESPN slug ("round-of-32" → "16avos", "final" → "Final").
+ * Group-stage rounds use "Matchday N" (and the legacy "Group Stage - N"): we
+ * extract the trailing integer and return "Fecha N". Falls back to the raw string
+ * when neither a knockout slug nor a trailing number is found.
  *
  * Pure function — no DB calls, no side effects. Used at the DISPLAY layer.
  * Do NOT change api_round values in the DB; derive the label here.
  */
 export function roundLabelFromApiRound(apiRound: string): string {
+  const knockout = KNOCKOUT_LABELS[apiRound];
+  if (knockout) {
+    return knockout;
+  }
   const match = apiRound.match(/(\d+)\s*$/);
   if (match) {
     return `Fecha ${match[1]}`;
@@ -51,6 +66,15 @@ export interface RoundSummary {
   first_kickoff: string | null;
   locks_at: string | null;
   status: "open" | "locked" | "finished";
+  /** 'group' (default) or 'knockout'. Optional — only the page needs it. */
+  stage?: "group" | "knockout";
+  /**
+   * Whether this round still has a bettable match. The caller computes it for
+   * KNOCKOUT rounds (whose round-level locks_at is only the EARLIEST match, so it
+   * can't tell that later matches are still open). When defined it overrides the
+   * round-level lock in selectCurrentRound; left undefined for group rounds.
+   */
+  has_open_fixture?: boolean;
 }
 
 // ── selectCurrentRound ──────────────────────────────────────────────────────
@@ -61,6 +85,24 @@ export interface RoundSummary {
  *
  * Returns null if the array is empty.
  */
+/**
+ * Whether a round is still "open" for the purpose of current-round selection.
+ *
+ * Knockout rounds (or any round the caller annotated with has_open_fixture) use
+ * per-fixture openness, because their round-level locks_at is only the earliest
+ * match's lock and would wrongly mark the whole phase closed while later matches
+ * are still bettable. Group rounds leave has_open_fixture undefined and fall back
+ * to the round-level lock (unchanged behavior).
+ */
+function isRoundOpen(round: RoundSummary, now: Date): boolean {
+  if (round.has_open_fixture !== undefined) {
+    return round.has_open_fixture;
+  }
+  return (
+    round.locks_at === null || !isRoundLocked(now, new Date(round.locks_at))
+  );
+}
+
 export function selectCurrentRound(
   rounds: RoundSummary[],
   now: Date
@@ -72,10 +114,7 @@ export function selectCurrentRound(
   const locked: RoundSummary[] = [];
 
   for (const round of rounds) {
-    if (
-      round.locks_at === null ||
-      !isRoundLocked(now, new Date(round.locks_at))
-    ) {
+    if (isRoundOpen(round, now)) {
       open.push(round);
     } else {
       locked.push(round);

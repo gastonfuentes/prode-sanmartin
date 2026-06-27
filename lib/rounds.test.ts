@@ -122,6 +122,32 @@ describe("selectCurrentRound", () => {
     // Both locked → latest kickoff wins → r2
     expect(selectCurrentRound([r1, r2], NOW)).toEqual(r2);
   });
+
+  // ── knockout awareness (has_open_fixture overrides round-level lock) ──────────
+
+  it("knockout round with an open fixture beats a round-locked phase (later matches still open)", () => {
+    // Round-level locks_at is in the past (first KO match kicked off), but a later
+    // match in the same phase is still open → has_open_fixture=true makes it current.
+    const ko = {
+      ...makeRound(2, "2026-06-14T15:00:00Z", lockedLocksAt),
+      stage: "knockout" as const,
+      has_open_fixture: true,
+    };
+    const group = makeRound(1, "2026-06-11T15:00:00Z", "2026-06-11T14:00:00Z");
+    expect(selectCurrentRound([group, ko], NOW)).toEqual(ko);
+  });
+
+  it("knockout round with no open fixture does NOT preempt an open group round during group stage", () => {
+    // KO round's round-level lock is far future, but its teams are undecided
+    // (has_open_fixture=false) → it must not be picked while the group round is open.
+    const group = makeRound(1, "2026-06-16T15:00:00Z", openLocksAt);
+    const ko = {
+      ...makeRound(2, "2026-06-28T15:00:00Z", "2026-06-28T14:00:00Z"),
+      stage: "knockout" as const,
+      has_open_fixture: false,
+    };
+    expect(selectCurrentRound([group, ko], NOW)).toEqual(group);
+  });
 });
 
 // ── roundLabelFromApiRound ──────────────────────────────────────────────────
@@ -153,5 +179,18 @@ describe("roundLabelFromApiRound", () => {
 
   it("ignores leading/trailing whitespace around the number", () => {
     expect(roundLabelFromApiRound("Group Stage -  2 ")).toBe("Fecha 2");
+  });
+
+  it("maps knockout ESPN slugs to Spanish phase labels", () => {
+    expect(roundLabelFromApiRound("round-of-32")).toBe("16avos");
+    expect(roundLabelFromApiRound("round-of-16")).toBe("Octavos");
+    expect(roundLabelFromApiRound("quarterfinals")).toBe("Cuartos");
+    expect(roundLabelFromApiRound("semifinals")).toBe("Semis");
+    expect(roundLabelFromApiRound("3rd-place-match")).toBe("3er puesto");
+    expect(roundLabelFromApiRound("final")).toBe("Final");
+  });
+
+  it("does NOT mislabel 'round-of-32' as 'Fecha 32' (knockout slug wins over trailing number)", () => {
+    expect(roundLabelFromApiRound("round-of-32")).not.toBe("Fecha 32");
   });
 });
